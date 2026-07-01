@@ -5,6 +5,7 @@ use crate::core::keycode::KeyModifiers;
 
 mod alphabet;
 mod basic;
+mod fkey;
 mod candidates;
 mod chunks;
 mod conversion;

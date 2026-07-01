@@ -85,6 +85,9 @@ impl Keysym {
     pub const F11: Keysym = Keysym(0xffc8);
     pub const F12: Keysym = Keysym(0xffc9);
 
+    // Japanese keyboard keys
+    pub const MUHENKAN: Keysym = Keysym(0xff22); // 無変換
+
     /// Check if this keysym represents a printable character
     pub fn is_printable(&self) -> bool {
         // ASCII printable range (0x20-0x7e)

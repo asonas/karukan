@@ -583,6 +583,33 @@ impl InputMethodEngine {
             Keysym::PAGE_DOWN => self.next_candidate_page(),
             Keysym::PAGE_UP => self.prev_candidate_page(),
             Keysym::BACKSPACE => self.backspace_conversion(),
+            Keysym::F6 => {
+                let text = self.input_buf.text.clone();
+                self.commit_text(text)
+            }
+            Keysym::F7 => {
+                let text = karukan_engine::hiragana_to_katakana(&self.input_buf.text);
+                self.commit_text(text)
+            }
+            Keysym::F8 => {
+                let text = karukan_engine::kana::hiragana_to_half_katakana(&self.input_buf.text);
+                self.commit_text(text)
+            }
+            Keysym::F9 => {
+                // start_conversion calls flush_romaji_to_composed, so raw_inputs has all romaji
+                let text: String = self.raw_inputs.join("").chars()
+                    .map(karukan_engine::kana::ascii_to_fullwidth_char)
+                    .collect();
+                self.commit_text(text)
+            }
+            Keysym::F10 => {
+                let text = self.raw_inputs.join("");
+                self.commit_text(text)
+            }
+            Keysym::MUHENKAN => {
+                let text = karukan_engine::hiragana_to_katakana(&self.input_buf.text);
+                self.commit_text(text)
+            }
             _ => {
                 // Ctrl+N / Ctrl+P: emacs-style candidate navigation
                 if key.modifiers.control_key && !key.modifiers.alt_key {
@@ -651,6 +678,7 @@ impl InputMethodEngine {
 
         self.state = InputState::Empty;
         self.input_buf.text.clear();
+        self.raw_inputs.clear();
         self.exit_emoji_mode();
 
         EngineResult::consumed()
@@ -674,6 +702,7 @@ impl InputMethodEngine {
 
         self.state = InputState::Empty;
         self.input_buf.text.clear();
+        self.raw_inputs.clear();
         self.exit_emoji_mode();
 
         // Start new input with the character
