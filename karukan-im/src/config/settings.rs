@@ -21,6 +21,8 @@ pub struct Settings {
     pub conversion: ConversionSettings,
     /// Learning cache settings
     pub learning: LearningSettings,
+    /// Key-binding behavior settings
+    pub keys: KeysSettings,
 }
 
 /// Conversion strategy mode
@@ -79,6 +81,16 @@ pub struct LearningSettings {
     pub enabled: bool,
     /// Maximum number of total entries in the learning cache
     pub max_entries: usize,
+}
+
+/// Key-binding behavior settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeysSettings {
+    /// Use Shift+Space to input a half-width ASCII space.
+    /// When true, Shift+Space commits a half-width space regardless of mode
+    /// (in Composing it first commits the current preedit, like Enter). When
+    /// false (default), Shift+Space keeps the bare-Space behavior.
+    pub shift_space_halfwidth: bool,
 }
 
 impl Default for Settings {
@@ -245,6 +257,31 @@ use_context = false
         let settings = Settings::load_from(&path).unwrap();
         assert_eq!(settings.conversion.num_candidates, 5);
         assert!(!settings.conversion.use_context);
+    }
+
+    #[test]
+    fn test_keys_default_shift_space_halfwidth_is_off() {
+        let settings = Settings::default();
+        assert!(!settings.keys.shift_space_halfwidth);
+    }
+
+    #[test]
+    fn test_keys_override_shift_space_halfwidth() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[keys]
+shift_space_halfwidth = true
+"#
+        )
+        .unwrap();
+
+        let path = file.path().to_path_buf();
+        let settings = Settings::load_from(&path).unwrap();
+        assert!(settings.keys.shift_space_halfwidth);
+        // Sections the user did not specify still fall back to defaults.
+        assert_eq!(settings.conversion.num_candidates, 9);
     }
 
     #[test]
