@@ -91,6 +91,9 @@ pub struct EngineConfig {
     /// Whether Ctrl+Space inputs a full-width space (U+3000).
     /// When false, Ctrl+Space is not consumed and passes through to the OS.
     pub ctrl_space_fullwidth: bool,
+    /// Whether Shift+Space inputs a half-width ASCII space.
+    /// When false, Shift+Space keeps the bare-Space behavior.
+    pub shift_space_halfwidth: bool,
 }
 
 impl EngineConfig {
@@ -112,6 +115,7 @@ impl EngineConfig {
             strategy: settings.conversion.strategy,
             live_conversion: settings.conversion.live_conversion,
             ctrl_space_fullwidth: settings.keys.ctrl_space_fullwidth,
+            shift_space_halfwidth: settings.keys.shift_space_halfwidth,
         }
     }
 }
@@ -129,6 +133,7 @@ impl Default for EngineConfig {
             strategy: StrategyMode::default(),
             live_conversion: false,
             ctrl_space_fullwidth: true,
+            shift_space_halfwidth: false,
         }
     }
 }

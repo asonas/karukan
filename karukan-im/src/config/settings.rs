@@ -90,6 +90,11 @@ pub struct KeysSettings {
     /// When false, Karukan does not intercept Ctrl+Space and lets it pass
     /// through to the OS (so window-switching shortcuts etc. still work).
     pub ctrl_space_fullwidth: bool,
+    /// Use Shift+Space to input a half-width ASCII space.
+    /// When true, Shift+Space commits a half-width space regardless of mode
+    /// (in Composing it first commits the current preedit, like Enter). When
+    /// false (default), Shift+Space keeps the bare-Space behavior.
+    pub shift_space_halfwidth: bool,
 }
 
 impl Default for Settings {
@@ -256,6 +261,32 @@ use_context = false
         let settings = Settings::load_from(&path).unwrap();
         assert_eq!(settings.conversion.num_candidates, 5);
         assert!(!settings.conversion.use_context);
+    }
+
+    #[test]
+    fn test_keys_default_shift_space_halfwidth_is_on() {
+        // This branch's bundled default enables Shift+Space half-width input.
+        let settings = Settings::default();
+        assert!(settings.keys.shift_space_halfwidth);
+    }
+
+    #[test]
+    fn test_keys_override_shift_space_halfwidth() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[keys]
+shift_space_halfwidth = true
+"#
+        )
+        .unwrap();
+
+        let path = file.path().to_path_buf();
+        let settings = Settings::load_from(&path).unwrap();
+        assert!(settings.keys.shift_space_halfwidth);
+        // Sections the user did not specify still fall back to defaults.
+        assert_eq!(settings.conversion.num_candidates, 9);
     }
 
     #[test]
