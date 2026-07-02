@@ -37,6 +37,29 @@ impl InputMethodEngine {
         // Remove character before cursor from composed_hiragana
         if self.input_buf.cursor_pos > 0 {
             self.input_buf.remove_char_before_cursor();
+            let new_pos = self.input_buf.cursor_pos;
+            let removed_raw = if new_pos < self.raw_inputs.len() {
+                self.raw_inputs.remove(new_pos)
+            } else {
+                String::new()
+            };
+            // A secondary char of a multi-kana group (e.g. "ゃ" from "kya") has an
+            // empty raw entry. Delete back through the group to its root so that
+            // F9/F10 never emit romaji for chars that no longer exist.
+            if removed_raw.is_empty() {
+                while self.input_buf.cursor_pos > 0 {
+                    let prev = self.input_buf.cursor_pos - 1;
+                    let is_secondary = self.raw_inputs.get(prev).map_or(false, |s| s.is_empty());
+                    self.input_buf.remove_char_before_cursor();
+                    let p = self.input_buf.cursor_pos;
+                    if p < self.raw_inputs.len() {
+                        self.raw_inputs.remove(p);
+                    }
+                    if !is_secondary {
+                        break;
+                    }
+                }
+            }
         } else {
             // Nothing to delete
             return EngineResult::consumed();
@@ -70,8 +93,12 @@ impl InputMethodEngine {
         }
 
         // Delete character at cursor position
+        let cursor_pos = self.input_buf.cursor_pos;
         if self.input_buf.remove_char_at_cursor().is_none() {
             return EngineResult::consumed();
+        }
+        if cursor_pos < self.raw_inputs.len() {
+            self.raw_inputs.remove(cursor_pos);
         }
 
         if let Some(result) = self.try_reset_if_empty() {

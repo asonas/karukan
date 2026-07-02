@@ -160,6 +160,10 @@ pub struct InputMethodEngine {
     dicts: Dictionaries,
     /// Learning cache (user conversion history)
     learning: Option<LearningCache>,
+    /// Parallel to input_buf.text chars: raw_inputs[i] is the romaji that produced char i.
+    /// Enables F9/F10 to reconstruct typed romaji without lossy reverse conversion, even after
+    /// cursor movement or mid-buffer edits.
+    raw_inputs: Vec<String>,
 }
 
 impl InputMethodEngine {
@@ -184,6 +188,7 @@ impl InputMethodEngine {
             chunks: Vec::new(),
             dicts: Dictionaries::default(),
             learning: None,
+            raw_inputs: Vec::new(),
         }
     }
 
@@ -256,6 +261,7 @@ impl InputMethodEngine {
         self.input_buf.clear();
         self.live.text.clear();
         self.chunks.clear();
+        self.raw_inputs.clear();
         self.metrics = ConversionMetrics::default();
     }
 
@@ -298,6 +304,7 @@ impl InputMethodEngine {
             // against a buffer it no longer matches).
             self.live.text.clear();
             self.chunks.clear();
+            self.raw_inputs.clear();
             // Emoji mode is per-session and bound to the typed `:` —
             // if the user erased back to an empty buffer, the session
             // is over. Restore whatever mode the user was in before
@@ -339,14 +346,33 @@ impl InputMethodEngine {
         }
     }
 
+    /// Commit `text` immediately, resetting all input state. Skips learning — the user dictated the form.
+    pub(super) fn commit_text(&mut self, text: String) -> EngineResult {
+        self.converters.romaji.reset();
+        self.input_buf.clear();
+        self.live.text.clear();
+        self.chunks.clear();
+        self.raw_inputs.clear();
+        self.state = InputState::Empty;
+        self.exit_emoji_mode();
+        let mut result = EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
+            .with_action(EngineAction::HideCandidates)
+            .with_action(EngineAction::HideAuxText);
+        if !text.is_empty() {
+            result = result.with_action(EngineAction::Commit(text));
+        }
+        result
+    }
+
     /// Flush the romaji buffer and insert result at cursor position
     fn flush_romaji_to_composed(&mut self) {
         if self.converters.romaji.buffer().is_empty() {
             return;
         }
+        let pre_flush_buffer = self.converters.romaji.buffer().to_string();
         let prev_output_len = self.converters.romaji.output().chars().count();
         let _flushed = self.converters.romaji.flush();
-        // flush() appends converted buffer to output internally
         let new_from_flush: String = self
             .converters
             .romaji
@@ -355,7 +381,12 @@ impl InputMethodEngine {
             .skip(prev_output_len)
             .collect();
         if !new_from_flush.is_empty() {
+            let insert_pos = self.input_buf.cursor_pos;
             self.input_buf.insert(&new_from_flush);
+            for (i, _) in new_from_flush.chars().enumerate() {
+                let s = if i == 0 { pre_flush_buffer.clone() } else { String::new() };
+                self.raw_inputs.insert(insert_pos + i, s);
+            }
         }
     }
 

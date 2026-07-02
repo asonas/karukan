@@ -33,6 +33,23 @@ impl InputMethodEngine {
             .with_action(EngineAction::UpdateAuxText(aux))
     }
 
+    /// Toggle hiragana/katakana display in Composing state without committing (Muhenkan key).
+    pub(super) fn toggle_katakana_composing(&mut self) -> EngineResult {
+        self.flush_romaji_to_composed();
+        self.converters.romaji.reset();
+        self.input_mode = match self.input_mode {
+            InputMode::Katakana => InputMode::Hiragana,
+            _ => InputMode::Katakana,
+        };
+        self.live.text.clear();
+        let preedit = self.set_composing_state();
+        let aux = self.format_aux_composing();
+        EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(preedit))
+            .with_action(EngineAction::UpdateAuxText(aux))
+            .with_action(EngineAction::HideCandidates)
+    }
+
     /// Toggle live conversion mode via Ctrl+Shift+L.
     ///
     /// When toggled ON during Composing, immediately convert the current
