@@ -295,11 +295,11 @@ shift_space_halfwidth = true
     }
 
     #[test]
-    fn test_keys_default_bare_space_halfwidth_is_off() {
-        // The bundled default keeps the Japanese-IME convention: bare Space
-        // commits a full-width `　`, so `bare_space_halfwidth` is off.
+    fn test_keys_default_bare_space_halfwidth_is_on() {
+        // This branch's bundled default makes the bare Space commit a
+        // half-width ASCII space (the full-width `　` stays on Ctrl+Space).
         let settings = Settings::default();
-        assert!(!settings.keys.bare_space_halfwidth);
+        assert!(settings.keys.bare_space_halfwidth);
     }
 
     #[test]
