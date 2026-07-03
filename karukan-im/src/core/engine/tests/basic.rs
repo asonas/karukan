@@ -95,6 +95,43 @@ fn double_space_in_empty_hiragana_commits_two_fullwidth_spaces() {
 }
 
 #[test]
+fn bare_space_in_empty_hiragana_commits_halfwidth_when_enabled() {
+    // With `bare_space_halfwidth` on, the bare Space in Empty Hiragana mode
+    // commits a half-width ASCII space instead of the full-width `　`. The
+    // full-width space is still reachable via Ctrl+Space.
+    let mut engine = InputMethodEngine::new();
+    engine.config.bare_space_halfwidth = true;
+    assert_eq!(engine.input_mode, InputMode::Hiragana);
+
+    let result = engine.process_key(&press_key(Keysym::SPACE));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Empty));
+    let committed = result.actions.iter().find_map(|a| match a {
+        EngineAction::Commit(t) => Some(t.clone()),
+        _ => None,
+    });
+    assert_eq!(committed.as_deref(), Some(" "));
+}
+
+#[test]
+fn double_bare_space_in_empty_hiragana_commits_two_halfwidth_when_enabled() {
+    // With `bare_space_halfwidth` on, two consecutive bare Spaces from Empty
+    // must each commit a half-width space, stay in Empty, and never trigger
+    // Conversion (the same regression guard as the full-width case).
+    let mut engine = InputMethodEngine::new();
+    engine.config.bare_space_halfwidth = true;
+    for _ in 0..2 {
+        let result = engine.process_key(&press_key(Keysym::SPACE));
+        assert!(matches!(engine.state(), InputState::Empty));
+        let committed = result.actions.iter().find_map(|a| match a {
+            EngineAction::Commit(t) => Some(t.clone()),
+            _ => None,
+        });
+        assert_eq!(committed.as_deref(), Some(" "));
+    }
+}
+
+#[test]
 fn shift_space_in_empty_commits_halfwidth_space_when_enabled() {
     // With `shift_space_halfwidth` on, Shift+Space emits a literal half-width
     // ASCII space regardless of mode — a deliberate override of the

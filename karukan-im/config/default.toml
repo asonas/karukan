@@ -47,3 +47,8 @@ ctrl_space_fullwidth = true
 # （Composing 中は現在のプリエディットを確定してから半角スペースを付ける）。
 # false では素の Space と同じ挙動のまま。
 shift_space_halfwidth = true
+# 素の Space を Empty 状態のひらがなモードで半角スペースにする。
+# true にすると、ひらがなモードでの素の Space が全角 `　` ではなく
+# 半角スペースをコミットする。false（既定）では全角 `　` をコミットし、
+# 日本語 IME の慣習に従う（全角スペースは Ctrl+Space でも入力できる）。
+bare_space_halfwidth = false

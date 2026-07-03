@@ -94,6 +94,9 @@ pub struct EngineConfig {
     /// Whether Shift+Space inputs a half-width ASCII space.
     /// When false, Shift+Space keeps the bare-Space behavior.
     pub shift_space_halfwidth: bool,
+    /// Whether the bare Space inputs a half-width ASCII space in Empty Hiragana
+    /// mode. When false (default), bare Space commits a full-width `　`.
+    pub bare_space_halfwidth: bool,
 }
 
 impl EngineConfig {
@@ -116,6 +119,7 @@ impl EngineConfig {
             live_conversion: settings.conversion.live_conversion,
             ctrl_space_fullwidth: settings.keys.ctrl_space_fullwidth,
             shift_space_halfwidth: settings.keys.shift_space_halfwidth,
+            bare_space_halfwidth: settings.keys.bare_space_halfwidth,
         }
     }
 }
@@ -134,6 +138,7 @@ impl Default for EngineConfig {
             live_conversion: false,
             ctrl_space_fullwidth: true,
             shift_space_halfwidth: false,
+            bare_space_halfwidth: false,
         }
     }
 }

@@ -95,6 +95,11 @@ pub struct KeysSettings {
     /// (in Composing it first commits the current preedit, like Enter). When
     /// false (default), Shift+Space keeps the bare-Space behavior.
     pub shift_space_halfwidth: bool,
+    /// Make the bare Space input a half-width ASCII space in Empty Hiragana
+    /// mode. When true, bare Space commits a half-width space instead of a
+    /// full-width `　`. When false (default), bare Space commits a full-width
+    /// `　`, matching the Japanese-IME convention.
+    pub bare_space_halfwidth: bool,
 }
 
 impl Default for Settings {
@@ -285,6 +290,33 @@ shift_space_halfwidth = true
         let path = file.path().to_path_buf();
         let settings = Settings::load_from(&path).unwrap();
         assert!(settings.keys.shift_space_halfwidth);
+        // Sections the user did not specify still fall back to defaults.
+        assert_eq!(settings.conversion.num_candidates, 9);
+    }
+
+    #[test]
+    fn test_keys_default_bare_space_halfwidth_is_off() {
+        // The bundled default keeps the Japanese-IME convention: bare Space
+        // commits a full-width `　`, so `bare_space_halfwidth` is off.
+        let settings = Settings::default();
+        assert!(!settings.keys.bare_space_halfwidth);
+    }
+
+    #[test]
+    fn test_keys_override_bare_space_halfwidth() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[keys]
+bare_space_halfwidth = true
+"#
+        )
+        .unwrap();
+
+        let path = file.path().to_path_buf();
+        let settings = Settings::load_from(&path).unwrap();
+        assert!(settings.keys.bare_space_halfwidth);
         // Sections the user did not specify still fall back to defaults.
         assert_eq!(settings.conversion.num_candidates, 9);
     }
