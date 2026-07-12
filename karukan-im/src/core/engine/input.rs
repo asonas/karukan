@@ -571,7 +571,6 @@ impl InputMethodEngine {
         // NSPanel only closes on an explicit hide (fcitx5 resets its panel
         // on commit implicitly, which masked this on Linux).
         EngineResult::consumed()
-            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
             .with_action(EngineAction::Commit(text))
             .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
@@ -638,13 +637,16 @@ impl InputMethodEngine {
         // prior mode so the next word is back in kana (#37).
         self.exit_alphabet_mode();
 
-        let mut result = EngineResult::consumed()
-            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
-            .with_action(EngineAction::HideCandidates)
-            .with_action(EngineAction::HideAuxText);
         if let Some(literal) = emoji_literal {
-            result = result.with_action(EngineAction::Commit(literal));
+            EngineResult::consumed()
+                .with_action(EngineAction::Commit(literal))
+                .with_action(EngineAction::HideCandidates)
+                .with_action(EngineAction::HideAuxText)
+        } else {
+            EngineResult::consumed()
+                .with_action(EngineAction::UpdatePreedit(Preedit::new()))
+                .with_action(EngineAction::HideCandidates)
+                .with_action(EngineAction::HideAuxText)
         }
-        result
     }
 }

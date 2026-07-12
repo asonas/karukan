@@ -683,7 +683,6 @@ impl InputMethodEngine {
         self.exit_alphabet_mode();
 
         EngineResult::consumed()
-            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
             .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
             .with_action(EngineAction::Commit(text))
@@ -824,7 +823,6 @@ impl InputMethodEngine {
         self.state = InputState::Empty;
 
         EngineResult::consumed()
-            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
             .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
             .with_action(EngineAction::Commit(selected_text))
