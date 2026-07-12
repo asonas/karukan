@@ -49,7 +49,7 @@ impl InputMethodEngine {
             if removed_raw.is_empty() {
                 while self.input_buf.cursor_pos > 0 {
                     let prev = self.input_buf.cursor_pos - 1;
-                    let is_secondary = self.raw_inputs.get(prev).map_or(false, |s| s.is_empty());
+                    let is_secondary = self.raw_inputs.get(prev).is_some_and(|s| s.is_empty());
                     self.input_buf.remove_char_before_cursor();
                     let p = self.input_buf.cursor_pos;
                     if p < self.raw_inputs.len() {
