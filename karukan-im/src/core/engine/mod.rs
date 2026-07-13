@@ -22,7 +22,7 @@ use input_buffer::InputBuffer;
 mod tests;
 
 use karukan_engine::{
-    Dictionary, KanaKanjiConverter, LearningCache, RewriterChain, RomajiConverter,
+    DateRewriter, Dictionary, KanaKanjiConverter, LearningCache, RewriterChain, RomajiConverter,
 };
 use tracing::{debug, trace};
 
@@ -169,16 +169,17 @@ pub struct InputMethodEngine {
 impl InputMethodEngine {
     /// Create a new IME engine
     pub fn new() -> Self {
+        let config = EngineConfig::default();
         Self {
             state: InputState::Empty,
             converters: Converters {
                 romaji: RomajiConverter::new(),
                 kanji: None,
                 light_kanji: None,
-                rewriters: RewriterChain::default_chain(),
+                rewriters: Self::build_rewriters(&config),
             },
             surrounding_context: None,
-            config: EngineConfig::default(),
+            config,
             metrics: ConversionMetrics::default(),
             input_mode: InputMode::Hiragana,
             pre_emoji_mode: None,
@@ -194,11 +195,25 @@ impl InputMethodEngine {
 
     /// Create with configuration
     pub fn with_config(config: EngineConfig) -> Self {
-        Self {
+        let rewriters = Self::build_rewriters(&config);
+        let mut engine = Self {
             live: LiveConversion::new(config.live_conversion),
             config,
             ..Self::new()
+        };
+        engine.converters.rewriters = rewriters;
+        engine
+    }
+
+    /// Build the rewriter chain for a configuration: the default chain plus the
+    /// date rewriter when date conversion is enabled and at least one format is
+    /// configured.
+    fn build_rewriters(config: &EngineConfig) -> RewriterChain {
+        let mut chain = RewriterChain::default_chain();
+        if config.date_conversion && !config.date_formats.is_empty() {
+            chain.add(Box::new(DateRewriter::new(config.date_formats.clone())));
         }
+        chain
     }
 
     /// Conversion (inference) time of the last `process_key` /
@@ -384,7 +399,11 @@ impl InputMethodEngine {
             let insert_pos = self.input_buf.cursor_pos;
             self.input_buf.insert(&new_from_flush);
             for (i, _) in new_from_flush.chars().enumerate() {
-                let s = if i == 0 { pre_flush_buffer.clone() } else { String::new() };
+                let s = if i == 0 {
+                    pre_flush_buffer.clone()
+                } else {
+                    String::new()
+                };
                 self.raw_inputs.insert(insert_pos + i, s);
             }
         }
