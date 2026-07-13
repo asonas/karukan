@@ -22,7 +22,7 @@ use input_buffer::InputBuffer;
 mod tests;
 
 use karukan_engine::{
-    DateRewriter, Dictionary, KanaKanjiConverter, LearningCache, RewriterChain, RomajiConverter,
+    Dictionary, KanaKanjiConverter, LearningCache, RewriterChain, RomajiConverter,
 };
 use tracing::{debug, trace};
 
@@ -41,6 +41,9 @@ enum CandidateSource {
     Learning,
     /// Model inference result
     Model,
+    /// Date conversion (きょう / あした / … → calendar date). Promoted to just
+    /// after the top model candidate so it surfaces on the first page.
+    Date,
     /// System dictionary lookup (also covers reading→symbol lookups via
     /// mozc's symbol.tsv — they're treated as just another dictionary).
     Dictionary,
@@ -56,6 +59,7 @@ impl CandidateSource {
             CandidateSource::UserDictionary => "\u{1F464} \u{30E6}\u{30FC}\u{30B6}\u{30FC}", // 👤 ユーザー
             CandidateSource::Learning => "\u{1F4DD} \u{5B66}\u{7FD2}", // 📝 学習
             CandidateSource::Model => "\u{1F916} AI",                  // 🤖 AI
+            CandidateSource::Date => "\u{1F4C5} \u{65E5}\u{4ED8}",     // 📅 日付
             CandidateSource::Dictionary => "\u{1F4DA} \u{8F9E}\u{66F8}", // 📚 辞書
             CandidateSource::Rewriter => "\u{1F504} \u{5909}\u{63DB}", // 🔄 変換
             CandidateSource::Fallback => "",
@@ -169,17 +173,16 @@ pub struct InputMethodEngine {
 impl InputMethodEngine {
     /// Create a new IME engine
     pub fn new() -> Self {
-        let config = EngineConfig::default();
         Self {
             state: InputState::Empty,
             converters: Converters {
                 romaji: RomajiConverter::new(),
                 kanji: None,
                 light_kanji: None,
-                rewriters: Self::build_rewriters(&config),
+                rewriters: RewriterChain::default_chain(),
             },
             surrounding_context: None,
-            config,
+            config: EngineConfig::default(),
             metrics: ConversionMetrics::default(),
             input_mode: InputMode::Hiragana,
             pre_emoji_mode: None,
@@ -195,25 +198,11 @@ impl InputMethodEngine {
 
     /// Create with configuration
     pub fn with_config(config: EngineConfig) -> Self {
-        let rewriters = Self::build_rewriters(&config);
-        let mut engine = Self {
+        Self {
             live: LiveConversion::new(config.live_conversion),
             config,
             ..Self::new()
-        };
-        engine.converters.rewriters = rewriters;
-        engine
-    }
-
-    /// Build the rewriter chain for a configuration: the default chain plus the
-    /// date rewriter when date conversion is enabled and at least one format is
-    /// configured.
-    fn build_rewriters(config: &EngineConfig) -> RewriterChain {
-        let mut chain = RewriterChain::default_chain();
-        if config.date_conversion && !config.date_formats.is_empty() {
-            chain.add(Box::new(DateRewriter::new(config.date_formats.clone())));
         }
-        chain
     }
 
     /// Conversion (inference) time of the last `process_key` /

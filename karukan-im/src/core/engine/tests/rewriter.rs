@@ -208,17 +208,48 @@ fn composing_engine_with_config(reading: &str, config: EngineConfig) -> InputMet
 #[test]
 fn date_conversion_enabled_emits_date_candidate_for_kyou() {
     // The default engine enables date conversion with the ISO format, so
-    // typing `きょう` yields a `YYYY-MM-DD` candidate from the Rewriter source.
+    // typing `きょう` yields a `YYYY-MM-DD` candidate tagged with the Date
+    // source, promoted onto the first page rather than the rewriter tail.
     let mut engine = composing_engine("きょう");
     let candidates = engine.build_conversion_candidates("きょう", 9, false);
-    let has_date = candidates
+    let pos = candidates
         .iter()
-        .any(|c| c.source == CandidateSource::Rewriter && looks_like_iso_date(&c.text));
+        .position(|c| c.source == CandidateSource::Date && looks_like_iso_date(&c.text));
     assert!(
-        has_date,
-        "expected an ISO date candidate for きょう, got {:?}",
+        pos.is_some(),
+        "expected a Date candidate for きょう, got {:?}",
         candidates.iter().map(|c| &c.text).collect::<Vec<_>>()
     );
+    // Promoted high (no model loaded here → right after the top candidate),
+    // well within the first candidate page.
+    assert!(
+        pos.unwrap() < 9,
+        "date candidate not on the first page: {pos:?}"
+    );
+}
+
+#[test]
+fn date_inserts_after_first_model_candidate() {
+    // With model candidates present, the date lands immediately after the
+    // top model candidate (index of first Model + 1).
+    use crate::core::engine::conversion::date_insert_index;
+    let cands = vec![
+        AnnotatedCandidate::new("学習", CandidateSource::Learning),
+        AnnotatedCandidate::new("今日", CandidateSource::Model),
+        AnnotatedCandidate::new("京", CandidateSource::Model),
+        AnnotatedCandidate::new("きょう", CandidateSource::Fallback),
+    ];
+    assert_eq!(date_insert_index(&cands), 2);
+}
+
+#[test]
+fn date_insert_index_without_model_is_after_top() {
+    use crate::core::engine::conversion::date_insert_index;
+    let cands = vec![
+        AnnotatedCandidate::new("きょう", CandidateSource::Fallback),
+        AnnotatedCandidate::new("キョウ", CandidateSource::Fallback),
+    ];
+    assert_eq!(date_insert_index(&cands), 1);
 }
 
 #[test]
