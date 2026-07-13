@@ -97,6 +97,12 @@ pub struct EngineConfig {
     /// Whether the bare Space inputs a half-width ASCII space in Empty Hiragana
     /// mode. When false (default), bare Space commits a full-width `　`.
     pub bare_space_halfwidth: bool,
+    /// Whether relative-day readings (きょう / あした / …) are converted into
+    /// calendar dates as extra candidates.
+    pub date_conversion: bool,
+    /// Date formats (chrono strftime) emitted by the date rewriter. Each entry
+    /// produces one candidate. Ignored when `date_conversion` is false.
+    pub date_formats: Vec<String>,
 }
 
 impl EngineConfig {
@@ -120,6 +126,8 @@ impl EngineConfig {
             ctrl_space_fullwidth: settings.keys.ctrl_space_fullwidth,
             shift_space_halfwidth: settings.keys.shift_space_halfwidth,
             bare_space_halfwidth: settings.keys.bare_space_halfwidth,
+            date_conversion: settings.date.enabled,
+            date_formats: settings.date.formats.clone(),
         }
     }
 }
@@ -139,6 +147,11 @@ impl Default for EngineConfig {
             ctrl_space_fullwidth: true,
             shift_space_halfwidth: false,
             bare_space_halfwidth: false,
+            date_conversion: true,
+            date_formats: karukan_engine::DEFAULT_DATE_FORMATS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }
