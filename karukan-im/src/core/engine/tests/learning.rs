@@ -3,7 +3,7 @@
 //! Space/Down: include learning candidates (default conversion).
 //! Tab: skip learning candidates (lets users escape stale learned entries).
 
-use karukan_engine::LearningCache;
+use karukan_engine::{LearningCache, Rewriter};
 
 use super::*;
 
@@ -18,6 +18,61 @@ fn engine_with_learned(reading: &str, surface: &str) -> InputMethodEngine {
     cache.record(reading, surface);
     engine.learning = Some(cache);
     engine
+}
+
+/// Today's date rendered as the ISO variant the `DateRewriter` emits, so the
+/// test agrees with the engine's own notion of "today" regardless of when it
+/// runs.
+fn todays_iso_date() -> String {
+    karukan_engine::DateRewriter::new(vec!["%Y-%m-%d".to_string()])
+        .rewrite("きょう")
+        .remove(0)
+        .0
+}
+
+#[test]
+fn record_learning_skips_todays_date_surface() {
+    // A date-reading committed as a calendar date must not enter the learning
+    // cache: the surface is time-dependent and would go stale (e.g. keep
+    // surfacing `2026-07-13` days later).
+    let mut engine = InputMethodEngine::new();
+    engine.learning = Some(LearningCache::new(100));
+
+    let today = todays_iso_date();
+    engine.record_learning("きょう", &today);
+
+    let texts: Vec<String> = engine
+        .lookup_learning_candidates("きょう")
+        .into_iter()
+        .map(|c| c.text)
+        .collect();
+    assert!(
+        !texts.contains(&today),
+        "date surface `{}` must not be learned, got {:?}",
+        today,
+        texts,
+    );
+}
+
+#[test]
+fn record_learning_keeps_kanji_surface_for_date_reading() {
+    // The guard is surface-specific, not reading-specific: `きょう → 今日` is a
+    // legitimate conversion the user wants remembered.
+    let mut engine = InputMethodEngine::new();
+    engine.learning = Some(LearningCache::new(100));
+
+    engine.record_learning("きょう", "今日");
+
+    let texts: Vec<String> = engine
+        .lookup_learning_candidates("きょう")
+        .into_iter()
+        .map(|c| c.text)
+        .collect();
+    assert!(
+        texts.contains(&"今日".to_string()),
+        "kanji surface `今日` should still be learned, got {:?}",
+        texts,
+    );
 }
 
 #[test]
