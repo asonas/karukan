@@ -107,6 +107,21 @@ pub struct EngineConfig {
     pub width: WidthRules,
     /// The space the Space key inputs
     pub space: SpaceStyle,
+    /// Whether Ctrl+Space inputs a full-width space (U+3000).
+    /// When false, Ctrl+Space is not consumed and passes through to the OS.
+    pub ctrl_space_fullwidth: bool,
+    /// Whether Shift+Space inputs a half-width ASCII space.
+    /// When false, Shift+Space keeps the bare-Space behavior.
+    pub shift_space_halfwidth: bool,
+    /// Whether the bare Space inputs a half-width ASCII space in Empty Hiragana
+    /// mode. When false (default), bare Space commits a full-width `　`.
+    pub bare_space_halfwidth: bool,
+    /// Whether relative-day readings (きょう / あした / …) are converted into
+    /// calendar dates as extra candidates.
+    pub date_conversion: bool,
+    /// Date formats (chrono strftime) emitted by the date rewriter. Each entry
+    /// produces one candidate. Ignored when `date_conversion` is false.
+    pub date_formats: Vec<String>,
 }
 
 impl EngineConfig {
@@ -134,6 +149,11 @@ impl EngineConfig {
             symbol: settings.symbol.style(),
             width: settings.width,
             space: settings.symbol.space,
+            ctrl_space_fullwidth: settings.keys.ctrl_space_fullwidth,
+            shift_space_halfwidth: settings.keys.shift_space_halfwidth,
+            bare_space_halfwidth: settings.keys.bare_space_halfwidth,
+            date_conversion: settings.date.enabled,
+            date_formats: settings.date.formats.clone(),
         }
     }
 }
@@ -157,6 +177,14 @@ impl Default for EngineConfig {
             symbol: SymbolStyle::default(),
             width: WidthRules::default(),
             space: SpaceStyle::default(),
+            ctrl_space_fullwidth: true,
+            shift_space_halfwidth: false,
+            bare_space_halfwidth: false,
+            date_conversion: true,
+            date_formats: karukan_engine::DEFAULT_DATE_FORMATS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }
@@ -261,6 +289,18 @@ pub(in crate::core) struct ComposingChunk {
     /// Model conversion of `reading` — this chunk's slice of the live preedit.
     /// Falls back to `reading` when the model yields nothing.
     pub converted: String,
+}
+
+/// One already-converted segment held during segment navigation (partial
+/// conversion): the display text the user chose and the reading it was
+/// converted from. The reading is what gets recorded in the learning cache
+/// when the segment is finally committed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::core) struct ConvertedSegment {
+    /// Converted display text (e.g. `藍`).
+    pub text: String,
+    /// Hiragana reading `text` was converted from (e.g. `あい`).
+    pub reading: String,
 }
 
 /// Live conversion state. The displayed text itself is not stored: it is

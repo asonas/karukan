@@ -13,6 +13,9 @@ pub enum CandidateSource {
     Learning,
     /// Model inference result
     Model,
+    /// Date conversion (きょう / あした / … → calendar date). Promoted to just
+    /// after the top model candidate so it surfaces on the first page.
+    Date,
     /// System dictionary lookup (also covers reading→symbol lookups via
     /// mozc's symbol.tsv — they're treated as just another dictionary).
     Dictionary,
@@ -30,6 +33,7 @@ impl CandidateSource {
             CandidateSource::UserDictionary => "\u{1F464} \u{30E6}\u{30FC}\u{30B6}\u{30FC}", // 👤 ユーザー
             CandidateSource::Learning => "\u{1F4DD} \u{5B66}\u{7FD2}", // 📝 学習
             CandidateSource::Model => "\u{1F916} AI",                  // 🤖 AI
+            CandidateSource::Date => "\u{1F4C5} \u{65E5}\u{4ED8}",     // 📅 日付
             CandidateSource::Dictionary => "\u{1F4DA} \u{8F9E}\u{66F8}", // 📚 辞書
             CandidateSource::Rewriter => "\u{1F504} \u{5909}\u{63DB}", // 🔄 変換
             CandidateSource::Fallback => "",
@@ -44,6 +48,7 @@ impl CandidateSource {
             CandidateSource::UserDictionary => "\u{1F464}", // 👤
             CandidateSource::Learning => "\u{1F4DD}",       // 📝
             CandidateSource::Model => "\u{1F916}",          // 🤖
+            CandidateSource::Date => "\u{1F4C5}",           // 📅
             CandidateSource::Dictionary => "\u{1F4DA}",     // 📚
             CandidateSource::Rewriter => "\u{1F504}",       // 🔄
             CandidateSource::Fallback => "",
@@ -281,6 +286,28 @@ impl CandidateList {
     /// Move the cursor to `cursor`, clamped into the list (0 when empty).
     pub fn set_cursor(&mut self, cursor: usize) {
         self.cursor = cursor.min(self.candidates.len().saturating_sub(1));
+    }
+
+    /// Select a candidate by absolute index. Used by segment navigation to
+    /// re-select a previously chosen candidate when re-entering a segment.
+    pub fn select(&mut self, index: usize) -> Option<&Candidate> {
+        if index < self.candidates.len() {
+            self.cursor = index;
+            self.selected()
+        } else {
+            None
+        }
+    }
+
+    /// Reset cursor to beginning
+    pub fn reset(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Update the candidate list with new candidates
+    pub fn update(&mut self, candidates: Vec<Candidate>) {
+        self.candidates = candidates;
+        self.cursor = 0;
     }
 }
 

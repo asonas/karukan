@@ -33,19 +33,35 @@
 use karukan_engine::RomajiConverter;
 
 /// One display character of the composition.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Element {
     /// A keystroke not yet consumed by a conversion rule
     Romaji(char),
     /// A settled character: fired rule output (`ko` → こ), passthrough
     /// (`1`), or direct input — excluded from romaji evaluation
-    Converted(char),
+    Converted {
+        ch: char,
+        /// The keystrokes that produced this character, kept so F9/F10 can
+        /// commit what was typed without a lossy kana→romaji reverse
+        /// conversion. A rule's keystrokes are attributed to its first
+        /// output character, so the later characters of a multi-kana rule
+        /// (`kya` → きゃ) carry none and the buffer's keystrokes still
+        /// concatenate in order.
+        raw: String,
+    },
 }
 
 impl Element {
+    fn converted(ch: char, raw: impl Into<String>) -> Self {
+        Element::Converted {
+            ch,
+            raw: raw.into(),
+        }
+    }
+
     fn ch(&self) -> char {
         match self {
-            Element::Romaji(ch) | Element::Converted(ch) => *ch,
+            Element::Romaji(ch) | Element::Converted { ch, .. } => *ch,
         }
     }
 
@@ -99,7 +115,15 @@ impl InputBuffer {
     /// Record a direct-input keystroke (alphabet/emoji mode) at the caret,
     /// settled as-is.
     pub fn push_direct(&mut self, ch: char) {
-        self.elements.insert(self.cursor, Element::Converted(ch));
+        self.push_direct_raw(ch, ch.to_string());
+    }
+
+    /// Record a settled character whose keystroke differs from what is
+    /// displayed — Ctrl+Space shows `　` but was typed as a space, so F10
+    /// commits the half-width form.
+    pub fn push_direct_raw(&mut self, ch: char, raw: impl Into<String>) {
+        self.elements
+            .insert(self.cursor, Element::converted(ch, raw));
         self.cursor += 1;
     }
 
@@ -110,7 +134,8 @@ impl InputBuffer {
         let count = text.chars().count();
         self.elements.splice(
             self.cursor..self.cursor,
-            text.chars().map(Element::Converted),
+            text.chars()
+                .map(|ch| Element::converted(ch, ch.to_string())),
         );
         self.cursor += count;
     }
@@ -194,7 +219,7 @@ impl InputBuffer {
         for element in &self.elements {
             match element {
                 Element::Romaji(ch) => run.push(*ch),
-                Element::Converted(ch) => {
+                Element::Converted { ch, .. } => {
                     if !run.is_empty() {
                         reading.push_str(&romaji.convert_flush(&run));
                         run.clear();
@@ -238,7 +263,7 @@ impl InputBuffer {
     /// leaving katakana mode so the preedit doesn't revert.
     pub fn bake_katakana(&mut self) {
         for element in &mut self.elements {
-            if let Element::Converted(ch) = element {
+            if let Element::Converted { ch, .. } = element {
                 let katakana = karukan_engine::hiragana_to_katakana(&ch.to_string());
                 *ch = katakana.chars().next().unwrap_or(*ch);
             }
@@ -264,6 +289,21 @@ impl InputBuffer {
 
     pub fn char_count(&self) -> usize {
         self.elements.len()
+    }
+
+    /// The keystrokes that produced the composition, in buffer order —
+    /// what F9/F10 commit. Reconstructed from the record rather than by
+    /// reverse-converting the kana, so cursor movement and mid-buffer
+    /// edits stay faithful (`aiueo`, caret back two, `ka` → `aiukaeo`).
+    pub fn raw_input(&self) -> String {
+        let mut raw = String::new();
+        for element in &self.elements {
+            match element {
+                Element::Romaji(ch) => raw.push(*ch),
+                Element::Converted { raw: keys, .. } => raw.push_str(keys),
+            }
+        }
+        raw
     }
 
     /// Element indices of the active run: the maximal Romaji run ending at
@@ -313,8 +353,48 @@ fn flush_run(out: &mut Vec<Element>, run: &mut String, romaji: &RomajiConverter)
     if run.is_empty() {
         return;
     }
-    out.extend(romaji.convert_flush(run).chars().map(Element::Converted));
+    let settled = romaji.convert_flush(run);
+    out.extend(
+        attribute_keys(&settled, run)
+            .into_iter()
+            .map(|(ch, raw)| Element::converted(romaji.width().apply(ch), raw)),
+    );
     run.clear();
+}
+
+/// Attribute `keys` to the characters of `text`. An ASCII output character
+/// passed through the converter unchanged, so it owns exactly its own
+/// keystroke; a run of rule outputs owns the keystrokes between its ASCII
+/// neighbours, all attributed to the run's first character because a
+/// multi-kana rule (`kya` → きゃ) cannot be split any further. The
+/// attributions therefore concatenate back to `keys`.
+fn attribute_keys(text: &str, keys: &str) -> Vec<(char, String)> {
+    let keys: Vec<char> = keys.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let mut out = Vec::with_capacity(text.len());
+    let mut pos = 0;
+    let mut i = 0;
+    while i < text.len() {
+        if text[i].is_ascii() {
+            out.push((text[i], text[i].to_string()));
+            pos += 1;
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < text.len() && !text[i].is_ascii() {
+            i += 1;
+        }
+        // Every remaining ASCII output still owes one keystroke, so the
+        // rest of `keys` belongs to this run of rule outputs.
+        let end = keys
+            .len()
+            .saturating_sub(text[i..].iter().filter(|c| c.is_ascii()).count());
+        out.push((text[start], keys[pos.min(end)..end].iter().collect()));
+        out.extend(text[start + 1..i].iter().map(|ch| (*ch, String::new())));
+        pos = end;
+    }
+    out
 }
 
 /// Evaluate a run of romaji keystrokes: convert the whole run and record
@@ -333,14 +413,17 @@ fn flush_run(out: &mut Vec<Element>, run: &mut String, romaji: &RomajiConverter)
 /// already settled alone.
 fn evaluate_run(run: &str, romaji: &RomajiConverter) -> Vec<Element> {
     let converted = romaji.convert(run);
-    converted
-        .text
-        .chars()
-        .map(|c| {
-            if romaji.starts_rule(c) {
-                Element::Romaji(c)
+    let consumed: String = run
+        .strip_suffix(converted.pending.as_str())
+        .unwrap_or(run)
+        .to_string();
+    attribute_keys(&converted.text, &consumed)
+        .into_iter()
+        .map(|(ch, raw)| {
+            if romaji.starts_rule(ch) {
+                Element::Romaji(ch)
             } else {
-                Element::Converted(romaji.width().apply(c))
+                Element::converted(romaji.width().apply(ch), raw)
             }
         })
         .chain(converted.pending.chars().map(Element::Romaji))

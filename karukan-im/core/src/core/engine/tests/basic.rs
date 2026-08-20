@@ -59,19 +59,6 @@ fn test_engine_backspace() {
 }
 
 #[test]
-fn space_in_empty_passes_through_by_default() {
-    // The default space is the ASCII one, which the application inserts
-    // itself — leaving Space to do whatever it does there (scrolling a
-    // page) while the IME has nothing to compose.
-    let mut engine = InputMethodEngine::new();
-
-    let result = engine.process_key(&press_key(Keysym::SPACE));
-    assert!(!result.consumed);
-    assert!(matches!(engine.state(), InputState::Empty));
-    assert!(result.actions.is_empty());
-}
-
-#[test]
 fn space_in_empty_hiragana_commits_fullwidth_space() {
     // A full-width space is committed directly from Empty without entering
     // Composing — the Japanese-IME convention, but without the side effect
@@ -108,18 +95,129 @@ fn double_space_in_empty_hiragana_commits_two_fullwidth_spaces() {
 }
 
 #[test]
-fn space_in_empty_katakana_follows_the_setting() {
-    // Katakana is kana input, so it takes the same space as hiragana.
-    let mut engine = fullwidth_space_engine();
-    engine.mode.set(InputMode::Katakana);
+fn bare_space_in_empty_hiragana_commits_halfwidth_when_enabled() {
+    // With `bare_space_halfwidth` on, the bare Space in Empty Hiragana mode
+    // commits a half-width ASCII space instead of the full-width `　`. The
+    // full-width space is still reachable via Ctrl+Space.
+    let mut engine = InputMethodEngine::new();
+    engine.config.bare_space_halfwidth = true;
+    assert_eq!(engine.mode.current(), InputMode::Hiragana);
 
     let result = engine.process_key(&press_key(Keysym::SPACE));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Empty));
+    let committed = result.actions.iter().find_map(|a| match a {
+        EngineAction::Commit(t) => Some(t.clone()),
+        _ => None,
+    });
+    assert_eq!(committed.as_deref(), Some(" "));
+}
+
+#[test]
+fn double_bare_space_in_empty_hiragana_commits_two_halfwidth_when_enabled() {
+    // With `bare_space_halfwidth` on, two consecutive bare Spaces from Empty
+    // must each commit a half-width space, stay in Empty, and never trigger
+    // Conversion (the same regression guard as the full-width case).
+    let mut engine = InputMethodEngine::new();
+    engine.config.bare_space_halfwidth = true;
+    for _ in 0..2 {
+        let result = engine.process_key(&press_key(Keysym::SPACE));
+        assert!(matches!(engine.state(), InputState::Empty));
+        let committed = result.actions.iter().find_map(|a| match a {
+            EngineAction::Commit(t) => Some(t.clone()),
+            _ => None,
+        });
+        assert_eq!(committed.as_deref(), Some(" "));
+    }
+}
+
+#[test]
+fn shift_space_in_empty_commits_halfwidth_space_when_enabled() {
+    // With `shift_space_halfwidth` on, Shift+Space emits a literal half-width
+    // ASCII space regardless of mode — a deliberate override of the
+    // bare-Space full-width behavior.
+    let mut engine = InputMethodEngine::new();
+    engine.config.shift_space_halfwidth = true;
+    assert_eq!(engine.mode.current(), InputMode::Hiragana);
+
+    let result = engine.process_key(&press_shift(' '));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Empty));
+    let committed = result.actions.iter().find_map(|a| match a {
+        EngineAction::Commit(t) => Some(t.clone()),
+        _ => None,
+    });
+    assert_eq!(committed.as_deref(), Some(" "));
+}
+
+#[test]
+fn shift_space_in_composing_commits_then_halfwidth_space_when_enabled() {
+    // With `shift_space_halfwidth` on, Shift+Space while composing commits the
+    // current preedit (like Enter) and appends a half-width space, then
+    // returns to Empty. It must NOT trigger conversion the way a bare Space
+    // does.
+    let mut engine = InputMethodEngine::new();
+    engine.config.shift_space_halfwidth = true;
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    assert_eq!(engine.preedit().unwrap().text(), "あい");
+
+    let result = engine.process_key(&press_shift(' '));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Empty));
+    let committed = result.actions.iter().find_map(|a| match a {
+        EngineAction::Commit(t) => Some(t.clone()),
+        _ => None,
+    });
+    assert_eq!(committed.as_deref(), Some("あい "));
+}
+
+#[test]
+fn shift_space_off_by_default_keeps_fullwidth_in_empty() {
+    // Default config (`shift_space_halfwidth` off): Shift+Space in Empty
+    // Hiragana keeps the bare-Space behavior and commits a full-width `　`.
+    let mut engine = InputMethodEngine::new();
+    assert!(!engine.config.shift_space_halfwidth);
+
+    let result = engine.process_key(&press_shift(' '));
+    assert!(matches!(engine.state(), InputState::Empty));
     let committed = result.actions.iter().find_map(|a| match a {
         EngineAction::Commit(t) => Some(t.clone()),
         _ => None,
     });
     assert_eq!(committed.as_deref(), Some("\u{3000}"));
+}
+
+#[test]
+fn shift_space_off_by_default_triggers_conversion_in_composing() {
+    // Default config (`shift_space_halfwidth` off): Shift+Space while composing
+    // keeps the bare-Space behavior and triggers conversion.
+    let mut engine = InputMethodEngine::new();
+    assert!(!engine.config.shift_space_halfwidth);
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    assert_eq!(engine.preedit().unwrap().text(), "あい");
+
+    let result = engine.process_key(&press_shift(' '));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+}
+
+#[test]
+fn space_in_empty_katakana_passes_through() {
+    // Non-Hiragana modes pass the bare Space through to the OS so the
+    // application gets a normal half-width ASCII space.
+    let mut engine = InputMethodEngine::new();
+    engine.mode.set(InputMode::Katakana);
+
+    let result = engine.process_key(&press_key(Keysym::SPACE));
+    assert!(!result.consumed);
     assert!(matches!(engine.state(), InputState::Empty));
+    assert!(
+        result.actions.is_empty(),
+        "expected no actions, got {:?}",
+        result.actions
+    );
 }
 
 #[test]
@@ -190,4 +288,76 @@ fn test_truncate_context() {
     // Japanese characters
     let jp = engine.truncate_context("今日はとても良い天気");
     assert_eq!(jp.chars().count(), 5); // Last 5 chars
+}
+
+#[test]
+fn ctrl_space_fullwidth_defaults_true_in_engine_config() {
+    let config = EngineConfig::default();
+    assert!(config.ctrl_space_fullwidth);
+}
+
+#[test]
+fn ctrl_space_fullwidth_maps_from_settings() {
+    let mut settings = crate::config::Settings::default();
+    assert!(EngineConfig::from_settings(&settings).ctrl_space_fullwidth);
+    settings.keys.ctrl_space_fullwidth = false;
+    assert!(!EngineConfig::from_settings(&settings).ctrl_space_fullwidth);
+}
+
+#[test]
+fn ctrl_space_inputs_fullwidth_space_in_empty_when_enabled() {
+    // Default config has ctrl_space_fullwidth = true.
+    let mut engine = InputMethodEngine::new();
+    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.preedit().unwrap().text(), "\u{3000}");
+}
+
+#[test]
+fn ctrl_space_passes_through_in_empty_when_disabled() {
+    let config = EngineConfig {
+        ctrl_space_fullwidth: false,
+        ..EngineConfig::default()
+    };
+    let mut engine = InputMethodEngine::with_config(config);
+    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
+    assert!(!result.consumed);
+    assert!(matches!(engine.state(), InputState::Empty));
+    assert!(
+        result.actions.is_empty(),
+        "expected no actions, got {:?}",
+        result.actions
+    );
+}
+
+#[test]
+fn ctrl_space_inserts_fullwidth_space_while_composing_when_enabled() {
+    let mut engine = InputMethodEngine::new();
+    engine.process_key(&press('a')); // preedit "あ", Composing
+    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert!(
+        engine.input_buf.display().contains('\u{3000}'),
+        "buffer should contain a full-width space, got {:?}",
+        engine.input_buf.display()
+    );
+}
+
+#[test]
+fn ctrl_space_passes_through_while_composing_when_disabled() {
+    let config = EngineConfig {
+        ctrl_space_fullwidth: false,
+        ..EngineConfig::default()
+    };
+    let mut engine = InputMethodEngine::with_config(config);
+    engine.process_key(&press('a')); // preedit "あ", Composing
+    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
+    assert!(!result.consumed);
+    // Must NOT trigger conversion (the fall-through bug guard) and must
+    // NOT insert a full-width space.
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.preedit().unwrap().text(), "あ");
+    assert!(!engine.input_buf.display().contains('\u{3000}'));
 }

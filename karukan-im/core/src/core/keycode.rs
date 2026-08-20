@@ -89,6 +89,23 @@ impl Keysym {
     pub const KEY_V: Keysym = Keysym(0x0076); // lowercase 'v'
     pub const KEY_V_UPPER: Keysym = Keysym(0x0056); // uppercase 'V'
 
+    // Function keys
+    pub const F1: Keysym = Keysym(0xffbe);
+    pub const F2: Keysym = Keysym(0xffbf);
+    pub const F3: Keysym = Keysym(0xffc0);
+    pub const F4: Keysym = Keysym(0xffc1);
+    pub const F5: Keysym = Keysym(0xffc2);
+    pub const F6: Keysym = Keysym(0xffc3);
+    pub const F7: Keysym = Keysym(0xffc4);
+    pub const F8: Keysym = Keysym(0xffc5);
+    pub const F9: Keysym = Keysym(0xffc6);
+    pub const F10: Keysym = Keysym(0xffc7);
+    pub const F11: Keysym = Keysym(0xffc8);
+    pub const F12: Keysym = Keysym(0xffc9);
+
+    // Japanese keyboard keys
+    pub const MUHENKAN: Keysym = Keysym(0xff22); // 無変換
+
     /// Check if this keysym represents a printable character
     pub fn is_printable(&self) -> bool {
         // ASCII printable range (0x20-0x7e)

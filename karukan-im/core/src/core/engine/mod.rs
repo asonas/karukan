@@ -28,14 +28,14 @@ use input_buffer::InputBuffer;
 mod tests;
 
 use karukan_engine::{
-    Dictionary, EmojiRewriter, KanaKanjiConverter, LearningCache, LearningConfig, RewriteOutput,
-    Rewriter, RewriterChain, RomajiConverter,
+    DateRewriter, Dictionary, EmojiRewriter, KanaKanjiConverter, LearningCache, LearningConfig,
+    RewriteOutput, RewriterChain, RomajiConverter,
 };
 use tracing::{debug, trace};
 
 use super::candidate::{Candidate, CandidateList, CandidateSource};
 use super::keycode::{KeyEvent, Keysym};
-use super::preedit::Preedit;
+use super::preedit::{Preedit, PreeditSegment};
 use super::state::InputState;
 use crate::config::settings::{Settings, SpaceStyle};
 
@@ -177,6 +177,20 @@ pub struct InputMethodEngine {
     /// Drained by `poll_loaded_models` at the top of `process_key`; until
     /// then (or if loading failed) the engine runs dictionary/kana-only.
     model_loading: Option<std::sync::mpsc::Receiver<init::LoadedConverters>>,
+    /// Unconverted tail reading remaining after a partial conversion
+    /// (e.g. user placed cursor mid-buffer before pressing Space, or
+    /// shrank the conversion range with Shift+Left). Committed back to
+    /// Composing after the conversion is confirmed.
+    conversion_tail: Option<String>,
+    /// Segments confirmed by Right arrow during partial conversion but not
+    /// yet committed to the application. Left arrow pops the last entry
+    /// to go back.
+    confirmed_segments: Vec<ConvertedSegment>,
+    /// Already-converted segments to the RIGHT of the current one, created
+    /// when Left arrow steps back over them, ordered left to right. Right
+    /// arrow pops the front entry to re-enter it with its previous selection
+    /// intact, so stepping back doesn't revert converted segments to raw kana.
+    upcoming_segments: Vec<ConvertedSegment>,
 }
 
 impl InputMethodEngine {
@@ -204,11 +218,15 @@ impl InputMethodEngine {
             dicts: Dictionaries::default(),
             learning: None,
             model_loading: None,
+            conversion_tail: None,
+            confirmed_segments: Vec::new(),
+            upcoming_segments: Vec::new(),
         }
     }
 
     /// Create with configuration
     pub fn with_config(config: EngineConfig) -> Self {
+        let rewriters = Self::build_rewriters(&config);
         let mut engine = Self {
             live: LiveConversion::new(config.live_conversion),
             ..Self::new()
@@ -218,8 +236,20 @@ impl InputMethodEngine {
         // width rules too: a keystroke settles at the width in force when
         // it was typed.
         engine.converters.romaji = RomajiConverter::with_rules(config.symbol, config.width);
+        engine.converters.rewriters = rewriters;
         engine.config = config;
         engine
+    }
+
+    /// Build the rewriter chain for a configuration: the default chain plus the
+    /// date rewriter when date conversion is enabled and at least one format is
+    /// configured.
+    fn build_rewriters(config: &EngineConfig) -> RewriterChain {
+        let mut chain = RewriterChain::default_chain();
+        if config.date_conversion && !config.date_formats.is_empty() {
+            chain.add(Box::new(DateRewriter::new(config.date_formats.clone())));
+        }
+        chain
     }
 
     /// Conversion (inference) time of the last `process_key` /
@@ -278,6 +308,9 @@ impl InputMethodEngine {
         self.state = InputState::Empty;
         self.mode = ModeState::default();
         self.clear_composition();
+        self.conversion_tail = None;
+        self.confirmed_segments.clear();
+        self.upcoming_segments.clear();
         self.metrics = ConversionMetrics::default();
     }
 
@@ -291,6 +324,9 @@ impl InputMethodEngine {
         self.chunks.clear();
         self.chunk_breaks.clear();
         self.shown_suggestions = CandidateList::default();
+        self.conversion_tail = None;
+        self.confirmed_segments.clear();
+        self.upcoming_segments.clear();
     }
 
     /// End the composition: clear the buffer, live display, and chunks,
@@ -338,7 +374,11 @@ impl InputMethodEngine {
         // A suggestion always carries its reading; fall back to the buffer
         // so a candidate built without one still records under a key.
         let reading = reading.or_else(|| Some(self.input_buf.reading()));
-        self.finish_conversion(&text, &reading);
+        let text = if matches!(self.state, InputState::Conversion { .. }) {
+            return self.commit_conversion();
+        } else {
+            self.finish_conversion(&text, &reading)
+        };
 
         EngineResult::consumed()
             .with_action(EngineAction::Commit(text))
@@ -381,6 +421,53 @@ impl InputMethodEngine {
     /// Settle the pending romaji segment into the composed text at the cursor
     fn settle_romaji(&mut self) {
         self.edit_with_chunk_breaks(|e| e.input_buf.settle_romaji(&e.converters.romaji));
+    }
+
+    /// Commit `text` immediately, resetting all input state. Skips learning —
+    /// the user dictated the form (F6–F10, Muhenkan), so there is nothing to
+    /// learn from the choice.
+    pub(super) fn commit_text(&mut self, text: String) -> EngineResult {
+        self.clear_composition();
+        self.state = InputState::Empty;
+        self.mode.exit_temporary();
+        let mut result = EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
+            .with_action(EngineAction::HideCandidates)
+            .with_action(EngineAction::HideAuxText);
+        if !text.is_empty() {
+            result = result.with_action(EngineAction::Commit(text));
+        }
+        result
+    }
+
+    /// The kana forms F6–F8 commit: the composition as it would settle,
+    /// leaving the buffer untouched (`commit_text` clears it right after).
+    fn settled_kana(&self) -> String {
+        self.input_buf.settled_reading(&self.converters.romaji)
+    }
+
+    /// F6–F10 (and Muhenkan in Conversion): commit the composition in a form
+    /// the user dictated outright, bypassing the candidate list.
+    ///
+    /// F9/F10 commit the recorded keystrokes rather than reverse-converting
+    /// the kana, so `windows` typed as kana comes back as `windows`.
+    pub(super) fn commit_kana_form(&mut self, keysym: Keysym) -> EngineResult {
+        let text = match keysym {
+            Keysym::F6 => self.settled_kana(),
+            Keysym::F8 => karukan_engine::kana::katakana_to_half_width(
+                &karukan_engine::hiragana_to_katakana(&self.settled_kana()),
+            ),
+            Keysym::F9 => self
+                .input_buf
+                .raw_input()
+                .chars()
+                .map(karukan_engine::kana::ascii_to_fullwidth_char)
+                .collect(),
+            Keysym::F10 => self.input_buf.raw_input(),
+            // F7 and Muhenkan
+            _ => karukan_engine::hiragana_to_katakana(&self.settled_kana()),
+        };
+        self.commit_text(text)
     }
 
     /// Set surrounding context from the full text plus a cursor offset in
@@ -644,8 +731,7 @@ impl InputMethodEngine {
                 let (text, reading) = self
                     .selected_conversion_info()
                     .expect("state is Conversion");
-                self.finish_conversion(&text, &reading);
-                text
+                self.finish_conversion(&text, &reading)
             }
         };
         self.surrounding_context = None;

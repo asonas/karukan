@@ -1,0 +1,186 @@
+From 466e25e50e9c312b860d785d00336b5a8433fc63 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.invalid>
+Date: Thu, 20 Aug 2026 16:47:45 +0900
+Subject: [PATCH 19/19] Commit Focused Candidate Before Typing
+
+During ordinary conversion, printable continuation input was routed through incremental refinement, so the candidate focused in the window could be lost. Commit that candidate first and feed the same key into a new composition.
+
+Keep source-filtered views incremental because their narrowing workflow depends on retaining the active filter.
+
+Upstream-Commit: 8d132a978c9e9b32daaf556a559bf46da5ed36ec
+Downstream-Reason: Restore focused-candidate commit behavior for ordinary candidate continuation while preserving source-filtered narrowing.
+Tested-On: macOS arm64; cargo test -p karukan-im
+
+diff --git a/docs/key-bindings.md b/docs/key-bindings.md
+index d55713e..62222a8 100644
+--- a/docs/key-bindings.md
++++ b/docs/key-bindings.md
+@@ -44,7 +44,7 @@ Karukan のキーバインド一覧です。共通キーバインドは Linux (f
+ | Ctrl+J | カーソル位置で区切り、別候補が出る範囲を狭める（絞り込み中も表示は維持。[詳細](chunking.md)） |
+ | Ctrl+I | 🤖AI候補のビューを直接開く |
+ | Ctrl+T / Ctrl+R （次 / 前） | 候補をソース別に絞り込み（📝学習→📚辞書→🤖AI→🔄記号変換をローテーション。📚はユーザー辞書とシステム辞書の両方で、ユーザー辞書が先。🔄の末尾に素のひらがな/カタカナも並ぶ。全体に戻るには Esc→Space） |
+-| 文字キー・数字 | 確定せず読みを伸ばして変換をやり直す（インクリメンタルに候補が更新される。ソース絞り込み中はフィルタを維持したままビュー内で候補が絞られ、補助テキストに入力中の読みが表示される） |
++| 文字キー・数字 | 選択中の候補を確定して新しい入力を開始（ソース絞り込み中はフィルタを維持したままビュー内で候補を絞る） |
+ | Backspace | 変換をキャンセルして入力編集に戻る（Escapeと同様）。ソース絞り込み中は読みを1文字縮めてビューに留まり、候補が広がる |
+ | ← → / Home / End / Ctrl+A・B・E・F | 変換を解いて入力編集に戻り、カーソル移動（ライブ変換中のカーソル移動と同じ挙動。ソース絞り込みも解除される） |
+ 
+diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
+index 7c34d71..e4ccfe4 100644
+--- a/karukan-im/core/src/core/engine/conversion.rs
++++ b/karukan-im/core/src/core/engine/conversion.rs
+@@ -775,11 +775,15 @@ impl InputMethodEngine {
+                     }
+                 }
+ 
+-                // A printable character refines instead of committing:
+-                // the reading grows and the suggestion rewrites in place,
+-                // keeping any active source filter.
++                // A printable character commits the focused candidate and
++                // starts the next composition with that same key. This keeps
++                // candidate navigation useful when the user continues
++                // typing without pressing Enter.
+                 if key.to_char().is_some() && !key.modifiers.control_key {
+-                    return self.refine_through_composing(key, shift_active);
++                    if self.state.filter().is_some() {
++                        return self.refine_through_composing(key, shift_active);
++                    }
++                    return self.commit_conversion_and_continue(key, shift_active);
+                 }
+ 
+                 // Everything else is consumed as a no-op — leaked chords
+@@ -807,6 +811,28 @@ impl InputMethodEngine {
+         result
+     }
+ 
++    /// Commit the focused candidate, then feed the same printable key into a
++    /// fresh or resumed composition so the user can continue typing without
++    /// an explicit Enter.
++    fn commit_conversion_and_continue(
++        &mut self,
++        key: &KeyEvent,
++        shift_active: bool,
++    ) -> EngineResult {
++        let mut result = self.commit_conversion();
++        if !result.consumed {
++            return result;
++        }
++
++        let next = match &self.state {
++            InputState::Empty => self.process_key_empty(key, shift_active),
++            InputState::Composing { .. } => self.process_key_composing(key, shift_active),
++            InputState::Conversion { .. } => return result,
++        };
++        result.actions.extend(next.actions);
++        result
++    }
++
+     /// Insert a chunk break at the caret without leaving the conversion.
+     /// The span is the last chunk, so breaking narrows what the beam
+     /// covers; the rebuilt list keeps the active source filter. The
+diff --git a/karukan-im/core/src/core/engine/tests/conversion.rs b/karukan-im/core/src/core/engine/tests/conversion.rs
+index f2ab74a..bd9acf5 100644
+--- a/karukan-im/core/src/core/engine/tests/conversion.rs
++++ b/karukan-im/core/src/core/engine/tests/conversion.rs
+@@ -1,41 +1,49 @@
+ use super::*;
+ 
+ #[test]
+-fn test_conversion_char_refines_reading() {
++fn test_conversion_char_commits_selected_candidate_and_starts_new_input() {
+     let mut engine = InputMethodEngine::new();
++    engine.converters.kanji = None;
++    engine.dicts.user = Some(dict_from_json(
++        r#"[{"reading":"あい","candidates":[
++            {"surface":"藍","score":2.0},
++            {"surface":"愛","score":1.0}
++        ]}]"#,
++    ));
+ 
+-    // Type "あい" and enter conversion
++    // Type "あい", open conversion, and focus the second candidate.
+     engine.process_key(&press('a'));
+     engine.process_key(&press('i'));
+     engine.process_key(&press_key(Keysym::SPACE));
+-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
++    let first_candidate = engine
++        .candidates()
++        .and_then(|c| c.selected_text())
++        .unwrap()
++        .to_string();
++    engine.process_key(&press_key(Keysym::SPACE));
++    let focused_candidate = engine
++        .candidates()
++        .and_then(|c| c.selected_text())
++        .unwrap()
++        .to_string();
++    assert_ne!(focused_candidate, first_candidate);
+ 
+-    // Typing during conversion must NOT commit — it drops back to the
+-    // composition and extends the reading (incremental-search feel).
++    // Typing the next word commits the focused candidate first, then starts
++    // the new composition with the same key.
+     let result = engine.process_key(&press('k'));
+-    assert!(result.consumed);
+-    assert!(
+-        !result
+-            .actions
+-            .iter()
+-            .any(|a| matches!(a, EngineAction::Commit(_))),
+-        "typing must refine, not commit"
++    assert_eq!(
++        committed(&result).as_deref(),
++        Some(focused_candidate.as_str())
+     );
++    assert!(result.actions.iter().any(|action| matches!(
++        action,
++        EngineAction::UpdatePreedit(preedit) if preedit.text() == "k"
++    )));
+     assert!(matches!(engine.state(), InputState::Composing { .. }));
++    assert_eq!(engine.input_buf.display(), "k");
+ 
+     engine.process_key(&press('a'));
+-    assert_eq!(engine.input_buf.reading(), "あいか");
+-
+-    // The refined reading converts and commits as one unit.
+-    engine.process_key(&press_key(Keysym::SPACE));
+-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+-    let result = engine.process_key(&press_key(Keysym::RETURN));
+-    assert!(
+-        result
+-            .actions
+-            .iter()
+-            .any(|a| matches!(a, EngineAction::Commit(_)))
+-    );
++    assert_eq!(engine.input_buf.reading(), "か");
+ }
+ 
+ #[test]
+@@ -97,10 +105,9 @@ fn committed(result: &EngineResult) -> Option<String> {
+ }
+ 
+ #[test]
+-fn test_bare_digit_during_conversion_refines_instead_of_selecting() {
+-    // Digits are plain text input everywhere: during conversion they extend
+-    // the reading like any printable char, never select a candidate.
++fn test_bare_digit_during_conversion_commits_and_starts_new_input() {
+     let mut engine = InputMethodEngine::new();
++    engine.converters.kanji = None;
+     engine.dicts.user = Some(dict_from_json(
+         r#"[{"reading":"あい","candidates":[{"surface":"藍","score":1.0}]}]"#,
+     ));
+@@ -111,8 +118,9 @@ fn test_bare_digit_during_conversion_refines_instead_of_selecting() {
+     assert!(matches!(engine.state(), InputState::Conversion { .. }));
+ 
+     let result = engine.process_key(&press('2'));
+-    assert!(committed(&result).is_none(), "a digit must not commit");
+-    assert_eq!(engine.input_buf.reading(), "あい2");
++    assert_eq!(committed(&result).as_deref(), Some("藍"));
++    assert!(matches!(engine.state(), InputState::Composing { .. }));
++    assert_eq!(engine.input_buf.display(), "2");
+ }
+ 
+ #[test]
+-- 
+2.55.0
+
+

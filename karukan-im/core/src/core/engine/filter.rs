@@ -173,6 +173,9 @@ impl InputMethodEngine {
                 .map(|ac| ac.into_candidate(&base))
                 .collect(),
             CandidateSource::Model => self.model_source_view(reading),
+            // Date candidates are promoted into the mixed list but are not a
+            // separate stop in the source-filter cycle.
+            CandidateSource::Date => Vec::new(),
             // Rewriter variants regenerate from the reading; the plain kana
             // pair rides at the tail (lowest priority).
             CandidateSource::Rewriter => {

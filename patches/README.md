@@ -2,14 +2,14 @@
 
 このディレクトリは、`togatoga/karukan` の `upstream/main` にまだ取り込まれていない変更を、番号付きパッチ列として管理するための場所である。
 
-パッチファイルが downstream 変更の正本である。`main` には upstream の履歴と `patches/` のパッチ・運用文書だけをコミットし、パッチを適用したソースコードは作業用 worktree に置く。詳細な規約は [`patches/AGENTS.md`](AGENTS.md) を参照する。
+パッチファイルが downstream 変更の正本である。`patches/*.patch` はすべて `main` に適用し、`main` にはパッチ適用済みのソースコードを保持する。詳細な規約は [`patches/AGENTS.md`](AGENTS.md) を参照する。
 
 ## 3つの状態
 
 | 状態 | 用途 | コミットするもの |
 | --- | --- | --- |
-| `main` | upstream の更新とパッチ列を管理する | `patches/*.patch` と運用文書だけ |
-| 適用済み worktree | ビルド、テスト、普段の開発に使う | 適用後のソースはコミットしない |
+| `main` | upstream の更新とパッチ適用済みソースを管理する | `patches/*.patch`、運用文書、適用済みソース |
+| mainからの作業用 worktree | ビルド、テスト、普段の開発に使う | 検証後に `main` へ反映する |
 | 一時 queue worktree | パッチの編集、競合解消、再生成に使う | `git am` 用の一時コミット。作業後に破棄する |
 
 ## リモートの役割
@@ -93,15 +93,15 @@ git fetch --all --prune
 git switch main
 ~~~
 
-適用済みソースは `main` と分離した worktree に作る。
+パッチは `main` のworktreeへ適用する。
 
 ~~~bash
-git worktree add -b applied/asonas .worktrees/applied main
+git switch main
 ~~~
 
 ## 既存パッチを適用する
 
-適用済み worktree で、作業開始前の状態を確認してから `patches/*.patch` を適用する。この用途では `git am` を使わない。`git apply` はソースを変更するが、コミットや index は変更しない。
+`main` のworktreeで、作業開始前の状態を確認してから `patches/*.patch` を適用する。この用途では `git am` を使わない。`git apply` はソースを変更するが、コミットやindexは変更しない。
 
 ~~~bash
 git status --short
@@ -113,18 +113,18 @@ git status --short
 git diff --check
 ~~~
 
-`git apply --3way` は競合時に index を変更することがあるため、通常はまず通常の `git apply` を使う。適用後のソース変更は、この worktree でビルド・テストするためのものであり、`main` にはコミットしない。
+`git apply --3way` は競合時にindexを変更することがあるため、通常はまず通常の `git apply` を使う。適用後のソース変更は `main` の変更として扱う。
 
 ## upstream/main を取り込む標準フロー
 
-適用済み worktree の変更を rebase し続けるのではなく、patch-only の `main` を upstream の先端へ移動し、適用済み worktree を作り直す。
+パッチ適用済みの `main` を更新するときは、既存パッチをいったん取り消してから `upstream/main` を取り込み、全パッチを再適用する。
 
 ~~~bash
 git fetch upstream --prune
 git rebase upstream/main
 ~~~
 
-この `rebase` は `main` に残ったパッチ・運用文書のコミットを更新するために行う。適用済み worktree のソース変更を rebase 対象にしない。パッチと upstream の競合を解消する必要がある場合は、一時 queue worktree で解消し、パッチを再生成する。
+この `rebase` でパッチとupstreamの競合が発生した場合は、一時queue worktreeで解消し、パッチを再生成してから `main` に全パッチを適用する。
 
 ## パッチを編集・再生成する
 
@@ -148,21 +148,22 @@ command rm patches/*.patch
 command cp "$patch_output"/*.patch patches/
 ~~~
 
-`git format-patch` はコミットを入力にするため、一時 queue worktree ではコミットが必要になる。生成した一時コミットは `main` に残さず、変更後の `patches/*.patch` だけを `main` に持ち帰る。
+`git format-patch` はコミットを入力にするため、一時 queue worktree ではコミットが必要になる。生成した一時コミットは `main` に残さず、変更後の `patches/*.patch` を `main` に持ち帰って全パッチを再適用する。
 
 ## コミット範囲
 
-コミット対象はパッチと運用文書だけに限定する。適用済みソースを誤ってコミットしないよう、ステージ後のファイル名を確認する。
+コミット対象は依頼されたパッチ、運用文書、`main` に適用したソースに限定する。ステージ後のファイル名を確認する。
 
 ~~~bash
 git add patches/*.patch patches/README.md patches/AGENTS.md
+git add path/to/changed-source-files
 git diff --cached --name-only
 git diff --cached --check -- patches/README.md patches/AGENTS.md
 git status --short
 git commit -m "Maintain Patch Queue As Canonical State"
 ~~~
 
-ステージされたファイルに `karukan-im/` などのソースパスが含まれていたら、コミットを中止してステージ内容を見直す。パッチ適用後のソース変更は、パッチファイルを更新する一時 queue worktree 以外ではコミットしない。
+ステージされたファイルに、依頼していない変更が含まれていたらコミットを中止してステージ内容を見直す。パッチ適用後のソース変更を、パッチ適用の依頼に反して除外してはならない。
 
 ## 検証
 

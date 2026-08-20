@@ -28,6 +28,10 @@ pub struct Settings {
     pub symbol: SymbolSettings,
     /// The width kana input comes out at, per character group
     pub width: WidthRules,
+    /// Key-binding behavior settings
+    pub keys: KeysSettings,
+    /// Date-conversion settings (きょう -> today's date)
+    pub date: DateSettings,
 }
 
 /// The space the Space key inputs while typing kana. Alphabet and emoji
@@ -156,6 +160,36 @@ pub struct LearningSettings {
     /// cache; longer conversion results (e.g. whole live-converted
     /// sentences) are not learned
     pub max_surface_chars: usize,
+}
+
+/// Key-binding behavior settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeysSettings {
+    /// Use Ctrl+Space to input a full-width space (U+3000).
+    /// When false, Karukan does not intercept Ctrl+Space and lets it pass
+    /// through to the OS (so window-switching shortcuts etc. still work).
+    pub ctrl_space_fullwidth: bool,
+    /// Use Shift+Space to input a half-width ASCII space.
+    /// When true, Shift+Space commits a half-width space regardless of mode
+    /// (in Composing it first commits the current preedit, like Enter). When
+    /// false (default), Shift+Space keeps the bare-Space behavior.
+    pub shift_space_halfwidth: bool,
+    /// Make the bare Space input a half-width ASCII space in Empty Hiragana
+    /// mode. When true, bare Space commits a half-width space instead of a
+    /// full-width `　`. When false (default), bare Space commits a full-width
+    /// `　`, matching the Japanese-IME convention.
+    pub bare_space_halfwidth: bool,
+}
+
+/// Date-conversion settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DateSettings {
+    /// Convert relative-day readings (きょう / あした / …) into calendar dates
+    /// as extra conversion candidates.
+    pub enabled: bool,
+    /// Date formats emitted as candidates, in `chrono` strftime notation. Each
+    /// entry produces one candidate (e.g. `%Y-%m-%d` → `2026-07-13`).
+    pub formats: Vec<String>,
 }
 
 impl Default for Settings {
@@ -418,6 +452,87 @@ use_context = false
     }
 
     #[test]
+    fn test_date_default_enabled_with_iso_and_japanese_formats() {
+        let settings = Settings::default();
+        assert!(settings.date.enabled);
+        assert_eq!(settings.date.formats, vec!["%Y-%m-%d", "%Y年%-m月%-d日"]);
+    }
+
+    #[test]
+    fn test_date_override_formats_and_enabled() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[date]
+enabled = false
+formats = ["%Y/%m/%d"]
+"#
+        )
+        .unwrap();
+
+        let path = file.path().to_path_buf();
+        let settings = Settings::load_from(&path).unwrap();
+        assert!(!settings.date.enabled);
+        assert_eq!(settings.date.formats, vec!["%Y/%m/%d"]);
+        // Sections the user did not specify still fall back to defaults.
+        assert_eq!(settings.conversion.num_candidates, 9);
+    }
+
+    #[test]
+    fn test_keys_default_shift_space_halfwidth_is_off() {
+        // Shift+Space remains opt-in; the bundled default is false.
+        let settings = Settings::default();
+        assert!(!settings.keys.shift_space_halfwidth);
+    }
+
+    #[test]
+    fn test_keys_override_shift_space_halfwidth() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[keys]
+shift_space_halfwidth = true
+"#
+        )
+        .unwrap();
+
+        let path = file.path().to_path_buf();
+        let settings = Settings::load_from(&path).unwrap();
+        assert!(settings.keys.shift_space_halfwidth);
+        // Sections the user did not specify still fall back to defaults.
+        assert_eq!(settings.conversion.num_candidates, 9);
+    }
+
+    #[test]
+    fn test_keys_default_bare_space_halfwidth_is_on() {
+        // This branch's bundled default makes the bare Space commit a
+        // half-width ASCII space (the full-width `　` stays on Ctrl+Space).
+        let settings = Settings::default();
+        assert!(settings.keys.bare_space_halfwidth);
+    }
+
+    #[test]
+    fn test_keys_override_bare_space_halfwidth() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[keys]
+bare_space_halfwidth = true
+"#
+        )
+        .unwrap();
+
+        let path = file.path().to_path_buf();
+        let settings = Settings::load_from(&path).unwrap();
+        assert!(settings.keys.bare_space_halfwidth);
+        // Sections the user did not specify still fall back to defaults.
+        assert_eq!(settings.conversion.num_candidates, 9);
+    }
+
+    #[test]
     fn test_user_dict_dir() {
         let dir = Settings::user_dict_dir();
         // Should return Some on systems with a home directory
@@ -496,5 +611,30 @@ strategy = "main"
         let path = file.path().to_path_buf();
         let settings = Settings::load_from(&path).unwrap();
         assert_eq!(settings.conversion.strategy, StrategyMode::Main);
+    }
+
+    #[test]
+    fn test_keys_default_ctrl_space_fullwidth() {
+        let settings = Settings::default();
+        assert!(settings.keys.ctrl_space_fullwidth);
+    }
+
+    #[test]
+    fn test_keys_override_and_other_sections_keep_defaults() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[keys]
+ctrl_space_fullwidth = false
+"#
+        )
+        .unwrap();
+
+        let path = file.path().to_path_buf();
+        let settings = Settings::load_from(&path).unwrap();
+        assert!(!settings.keys.ctrl_space_fullwidth);
+        // Sections the user did not specify still fall back to defaults.
+        assert_eq!(settings.conversion.num_candidates, 9);
     }
 }

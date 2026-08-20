@@ -1,41 +1,49 @@
 use super::*;
 
 #[test]
-fn test_conversion_char_refines_reading() {
+fn test_conversion_char_commits_selected_candidate_and_starts_new_input() {
     let mut engine = InputMethodEngine::new();
+    engine.converters.kanji = None;
+    engine.dicts.user = Some(dict_from_json(
+        r#"[{"reading":"あい","candidates":[
+            {"surface":"藍","score":2.0},
+            {"surface":"愛","score":1.0}
+        ]}]"#,
+    ));
 
-    // Type "あい" and enter conversion
+    // Type "あい", open conversion, and focus the second candidate.
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::SPACE));
-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    let first_candidate = engine
+        .candidates()
+        .and_then(|c| c.selected_text())
+        .unwrap()
+        .to_string();
+    engine.process_key(&press_key(Keysym::SPACE));
+    let focused_candidate = engine
+        .candidates()
+        .and_then(|c| c.selected_text())
+        .unwrap()
+        .to_string();
+    assert_ne!(focused_candidate, first_candidate);
 
-    // Typing during conversion must NOT commit — it drops back to the
-    // composition and extends the reading (incremental-search feel).
+    // Typing the next word commits the focused candidate first, then starts
+    // the new composition with the same key.
     let result = engine.process_key(&press('k'));
-    assert!(result.consumed);
-    assert!(
-        !result
-            .actions
-            .iter()
-            .any(|a| matches!(a, EngineAction::Commit(_))),
-        "typing must refine, not commit"
+    assert_eq!(
+        committed(&result).as_deref(),
+        Some(focused_candidate.as_str())
     );
+    assert!(result.actions.iter().any(|action| matches!(
+        action,
+        EngineAction::UpdatePreedit(preedit) if preedit.text() == "k"
+    )));
     assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.input_buf.display(), "k");
 
     engine.process_key(&press('a'));
-    assert_eq!(engine.input_buf.reading(), "あいか");
-
-    // The refined reading converts and commits as one unit.
-    engine.process_key(&press_key(Keysym::SPACE));
-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
-    let result = engine.process_key(&press_key(Keysym::RETURN));
-    assert!(
-        result
-            .actions
-            .iter()
-            .any(|a| matches!(a, EngineAction::Commit(_)))
-    );
+    assert_eq!(engine.input_buf.reading(), "か");
 }
 
 #[test]
@@ -97,10 +105,9 @@ fn committed(result: &EngineResult) -> Option<String> {
 }
 
 #[test]
-fn test_bare_digit_during_conversion_refines_instead_of_selecting() {
-    // Digits are plain text input everywhere: during conversion they extend
-    // the reading like any printable char, never select a candidate.
+fn test_bare_digit_during_conversion_commits_and_starts_new_input() {
     let mut engine = InputMethodEngine::new();
+    engine.converters.kanji = None;
     engine.dicts.user = Some(dict_from_json(
         r#"[{"reading":"あい","candidates":[{"surface":"藍","score":1.0}]}]"#,
     ));
@@ -111,8 +118,9 @@ fn test_bare_digit_during_conversion_refines_instead_of_selecting() {
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
 
     let result = engine.process_key(&press('2'));
-    assert!(committed(&result).is_none(), "a digit must not commit");
-    assert_eq!(engine.input_buf.reading(), "あい2");
+    assert_eq!(committed(&result).as_deref(), Some("藍"));
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.input_buf.display(), "2");
 }
 
 #[test]
@@ -210,45 +218,6 @@ fn test_emoji_digit_selection_does_not_pollute_learning() {
         learned.lookup(":smile").is_empty(),
         "emoji query must not enter the learning cache"
     );
-}
-
-#[test]
-fn test_arrow_in_conversion_returns_to_composing_and_moves_caret() {
-    // Matching live conversion: a caret key dissolves the conversion and
-    // moves the caret in the raw composition.
-    let mut engine = InputMethodEngine::new();
-    for ch in "kyou".chars() {
-        engine.process_key(&press(ch));
-    }
-    assert_eq!(engine.input_buf.cursor(), 3); // き ょ う
-    engine.process_key(&press_key(Keysym::SPACE));
-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
-
-    let result = engine.process_key(&press_key(Keysym::LEFT));
-    assert!(result.consumed);
-    assert!(matches!(engine.state(), InputState::Composing { .. }));
-    assert_eq!(engine.input_buf.cursor(), 2, "caret must move left");
-
-    engine.process_key(&press_key(Keysym::END));
-    assert_eq!(engine.input_buf.cursor(), 3);
-}
-
-#[test]
-fn test_arrow_in_source_view_dissolves_the_filter() {
-    // From the Ctrl+I model view: the caret key exits to editing and the
-    // filter dies with the conversion state.
-    let mut engine = InputMethodEngine::new();
-    for ch in "kyou".chars() {
-        engine.process_key(&press(ch));
-    }
-    engine.process_key(&press_ctrl(Keysym::KEY_I));
-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
-
-    let result = engine.process_key(&press_key(Keysym::LEFT));
-    assert!(result.consumed);
-    assert!(matches!(engine.state(), InputState::Composing { .. }));
-    assert_eq!(engine.input_buf.cursor(), 2);
-    assert!(engine.state().filter().is_none());
 }
 
 #[test]

@@ -36,6 +36,15 @@ space = "half"                 # かな入力中のスペースキーが入力�
 kana_symbol = "full"             # 。、「」・
 ascii_symbol = "full"          # ?! ,. (){}[] @ : ~ ほかの記号
 digit = "half"                 # 0-9
+
+[keys]
+ctrl_space_fullwidth = true    # Ctrl+Space で全角スペースを入力（既定ON。OFFにするとOSへ素通し）
+shift_space_halfwidth = false  # Shift+Space で半角スペースを入力（既定OFF）
+bare_space_halfwidth = true    # 何も入力していないときの Space を半角にする（既定ON）
+
+[date]
+enabled = true                          # 日付変換の有効/無効（既定ON）
+formats = ["%Y-%m-%d", "%Y年%-m月%-d日"] # 出力フォーマット（chrono strftime）。複数指定で各々が候補になる
 ```
 
 `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回起動時にHugging Faceからバックグラウンドで自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
