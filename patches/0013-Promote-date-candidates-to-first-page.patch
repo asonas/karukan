@@ -1,7 +1,7 @@
-From 7c4fca95e3fabf8f30e54544a8f6733ee20a59c7 Mon Sep 17 00:00:00 2001
+From ad551c0321c237c44ed948ca591cfc002955b7d8 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Mon, 13 Jul 2026 14:06:03 +0900
-Subject: [PATCH 13/17] Promote date candidates to first page
+Subject: [PATCH 13/18] Promote date candidates to first page
 
 Move date conversion out of the rewriter chain and into an explicit
 candidate insertion step. Introduce CandidateSource::Date to distinguish
@@ -44,7 +44,7 @@ index 2cbc4d7..863c4e7 100644
              CandidateSource::Rewriter => "\u{1F504} \u{5909}\u{63DB}", // 🔄 変換
              CandidateSource::Fallback => "",
 diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
-index 6d445ad..a089fd4 100644
+index 08be001..89e4442 100644
 --- a/karukan-im/core/src/core/engine/conversion.rs
 +++ b/karukan-im/core/src/core/engine/conversion.rs
 @@ -4,11 +4,23 @@
@@ -71,7 +71,7 @@ index 6d445ad..a089fd4 100644
  /// Maximum number of learning candidates to show
  const MAX_LEARNING_CANDIDATES: usize = 3;
  
-@@ -393,7 +405,32 @@ impl InputMethodEngine {
+@@ -389,7 +401,32 @@ impl InputMethodEngine {
                  .map(str::to_string);
          }
  
@@ -106,7 +106,7 @@ index 6d445ad..a089fd4 100644
  
      /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
 diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
-index d6ef78b..93af09a 100644
+index 10ec8be..e135f2b 100644
 --- a/karukan-im/core/src/core/engine/mod.rs
 +++ b/karukan-im/core/src/core/engine/mod.rs
 @@ -28,8 +28,8 @@ use input_buffer::InputBuffer;
@@ -120,7 +120,7 @@ index d6ef78b..93af09a 100644
  };
  use tracing::{debug, trace};
  
-@@ -177,17 +177,16 @@ pub struct InputMethodEngine {
+@@ -182,17 +182,16 @@ pub struct InputMethodEngine {
  impl InputMethodEngine {
      /// Create a new IME engine
      pub fn new() -> Self {
@@ -140,7 +140,7 @@ index d6ef78b..93af09a 100644
              metrics: ConversionMetrics::default(),
              mode: ModeState::default(),
              input_buf: InputBuffer::new(),
-@@ -227,7 +226,6 @@ impl InputMethodEngine {
+@@ -233,7 +232,6 @@ impl InputMethodEngine {
          if config.date_conversion && !config.date_formats.is_empty() {
              chain.add(Box::new(DateRewriter::new(config.date_formats.clone())));
          }

@@ -1,7 +1,7 @@
-From 4759534a5de202540a9fac16e8dd912b672e9233 Mon Sep 17 00:00:00 2001
+From 08de4106259b54ca4d62d37b96136022175cc127 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Sat, 8 Aug 2026 19:07:20 +0900
-Subject: [PATCH 15/17] Adapt live conversion resets to upstream state
+Subject: [PATCH 15/18] Adapt live conversion resets to upstream state
 
 Update downstream mode reset paths to use LiveConversion.shown after upstream removed live.text.
 
@@ -16,10 +16,10 @@ Tested-On: macOS arm64; make -C karukan-im/macos test
  2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
-index 93af09a..cc635fd 100644
+index e135f2b..a8abee8 100644
 --- a/karukan-im/core/src/core/engine/mod.rs
 +++ b/karukan-im/core/src/core/engine/mod.rs
-@@ -393,7 +393,7 @@ impl InputMethodEngine {
+@@ -400,7 +400,7 @@ impl InputMethodEngine {
      /// learn from the choice.
      pub(super) fn commit_text(&mut self, text: String) -> EngineResult {
          self.input_buf.clear();

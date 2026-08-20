@@ -1,7 +1,7 @@
-From e2f55d0ef5a4a11ce52f71b1efb3a3e2ce41daa7 Mon Sep 17 00:00:00 2001
+From 7cbf51031f840b0c50ec4d7a550492d478a04915 Mon Sep 17 00:00:00 2001
 From: ryo-icy <74962200+ryo-icy@users.noreply.github.com>
 Date: Wed, 1 Jul 2026 14:36:34 +0000
-Subject: [PATCH 08/17] =?UTF-8?q?Add=20F6=E2=80=93F10=20and=20Muhenkan=20k?=
+Subject: [PATCH 08/18] =?UTF-8?q?Add=20F6=E2=80=93F10=20and=20Muhenkan=20k?=
  =?UTF-8?q?ey=20support=20for=20kana=20commit=20shortcuts?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -39,13 +39,13 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
  create mode 100644 karukan-im/core/src/core/engine/tests/fkey.rs
 
 diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
-index 8af6af1..6d445ad 100644
+index 9d68a0e..08be001 100644
 --- a/karukan-im/core/src/core/engine/conversion.rs
 +++ b/karukan-im/core/src/core/engine/conversion.rs
-@@ -552,6 +552,11 @@ impl InputMethodEngine {
+@@ -556,6 +556,11 @@ impl InputMethodEngine {
+             Keysym::LEFT | Keysym::RIGHT | Keysym::HOME | Keysym::END => {
+                 self.in_composing(false, |e| e.process_key_composing(key, shift_active))
              }
-             // Backspace cancels back to the composition, like Escape.
-             Keysym::BACKSPACE => self.cancel_conversion(),
 +            // Muhenkan commits katakana here rather than toggling: with a
 +            // candidate list open there is no composition left to re-render.
 +            Keysym::F6 | Keysym::F7 | Keysym::F8 | Keysym::F9 | Keysym::F10 | Keysym::MUHENKAN => {
@@ -275,10 +275,10 @@ index f2e4471..4c85e7a 100644
          })
          .chain(converted.pending.chars().map(Element::Romaji))
 diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
-index 28434e2..ceb7f3b 100644
+index b2d3538..0763d00 100644
 --- a/karukan-im/core/src/core/engine/mod.rs
 +++ b/karukan-im/core/src/core/engine/mod.rs
-@@ -376,6 +376,55 @@ impl InputMethodEngine {
+@@ -383,6 +383,55 @@ impl InputMethodEngine {
          self.edit_with_chunk_breaks(|e| e.input_buf.settle_romaji(&e.converters.romaji));
      }
  

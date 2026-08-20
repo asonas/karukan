@@ -1,7 +1,7 @@
-From 91d75d8064bbaa6d7a94a67d550a44025880011b Mon Sep 17 00:00:00 2001
+From f4b8188b5113d1640ff420409edf08260e21e23f Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Mon, 13 Jul 2026 11:15:23 +0900
-Subject: [PATCH 12/17] Add date conversion with configurable formats
+Subject: [PATCH 12/18] Add date conversion with configurable formats
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -38,10 +38,10 @@ details.
  create mode 100644 karukan-engine/src/rewriter/date.rs
 
 diff --git a/Cargo.lock b/Cargo.lock
-index ddda189..d012c7f 100644
+index d42826a..0198217 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -1707,6 +1707,7 @@ name = "karukan-engine"
+@@ -1708,6 +1708,7 @@ name = "karukan-engine"
  version = "0.1.0"
  dependencies = [
   "anyhow",
@@ -50,7 +50,7 @@ index ddda189..d012c7f 100644
   "hf-hub",
   "llama-cpp-2",
 diff --git a/docs/configuration.md b/docs/configuration.md
-index b7fc21c..7a3d8c7 100644
+index 48d08bb..3cdbba3 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -41,6 +41,10 @@ digit = "half"                 # 0-9
@@ -63,7 +63,7 @@ index b7fc21c..7a3d8c7 100644
 +formats = ["%Y-%m-%d", "%Y年%-m月%-d日"] # 出力フォーマット（chrono strftime）。複数指定で各々が候補になる
  ```
  
- `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回利用時にHugging Faceから自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
+ `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回起動時にHugging Faceからバックグラウンドで自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
 diff --git a/karukan-engine/Cargo.toml b/karukan-engine/Cargo.toml
 index ee0c01c..272fb3a 100644
 --- a/karukan-engine/Cargo.toml
@@ -413,7 +413,7 @@ index c68c567..94012c3 100644
  
      #[test]
 diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
-index ceb7f3b..d6ef78b 100644
+index 0763d00..10ec8be 100644
 --- a/karukan-im/core/src/core/engine/mod.rs
 +++ b/karukan-im/core/src/core/engine/mod.rs
 @@ -28,8 +28,8 @@ use input_buffer::InputBuffer;
@@ -427,7 +427,7 @@ index ceb7f3b..d6ef78b 100644
  };
  use tracing::{debug, trace};
  
-@@ -177,16 +177,17 @@ pub struct InputMethodEngine {
+@@ -182,16 +182,17 @@ pub struct InputMethodEngine {
  impl InputMethodEngine {
      /// Create a new IME engine
      pub fn new() -> Self {
@@ -447,7 +447,7 @@ index ceb7f3b..d6ef78b 100644
              metrics: ConversionMetrics::default(),
              mode: ModeState::default(),
              input_buf: InputBuffer::new(),
-@@ -203,6 +204,7 @@ impl InputMethodEngine {
+@@ -209,6 +210,7 @@ impl InputMethodEngine {
  
      /// Create with configuration
      pub fn with_config(config: EngineConfig) -> Self {
@@ -455,7 +455,7 @@ index ceb7f3b..d6ef78b 100644
          let mut engine = Self {
              live: LiveConversion::new(config.live_conversion),
              ..Self::new()
-@@ -212,10 +214,22 @@ impl InputMethodEngine {
+@@ -218,10 +220,22 @@ impl InputMethodEngine {
          // width rules too: a keystroke settles at the width in force when
          // it was typed.
          engine.converters.romaji = RomajiConverter::with_rules(config.symbol, config.width);

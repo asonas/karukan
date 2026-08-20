@@ -1,7 +1,7 @@
-From 79ed6cb7408a46818728bc9c72ba597fbc14cc6e Mon Sep 17 00:00:00 2001
+From 9a8e8277c908155683777cc386e2123ab3f7ba10 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Wed, 1 Jul 2026 15:19:30 +0900
-Subject: [PATCH 03/17] Add Ctrl+Space configurability
+Subject: [PATCH 03/18] Add Ctrl+Space configurability
 
 Introduce a new [keys] configuration section that allows users to
 control whether Ctrl+Space inputs a full-width space (U+3000) or

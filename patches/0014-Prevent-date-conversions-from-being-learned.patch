@@ -1,7 +1,7 @@
-From b14d72959d7875251c958d422d380479ce4f59ca Mon Sep 17 00:00:00 2001
+From 7a8ecbd830ec607680c0c079fca20c7d53ef13aa Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Thu, 16 Jul 2026 09:46:00 +0900
-Subject: [PATCH 14/17] Prevent date conversions from being learned
+Subject: [PATCH 14/18] Prevent date conversions from being learned
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -25,10 +25,10 @@ learned correctly.
  2 files changed, 94 insertions(+), 4 deletions(-)
 
 diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
-index a089fd4..09116d1 100644
+index 89e4442..0e9f2d9 100644
 --- a/karukan-im/core/src/core/engine/conversion.rs
 +++ b/karukan-im/core/src/core/engine/conversion.rs
-@@ -708,11 +708,18 @@ impl InputMethodEngine {
+@@ -727,11 +727,18 @@ impl InputMethodEngine {
          }
      }
  
@@ -51,7 +51,7 @@ index a089fd4..09116d1 100644
              return;
          }
          if let Some(cache) = &mut self.learning {
-@@ -729,6 +736,19 @@ impl InputMethodEngine {
+@@ -748,6 +755,19 @@ impl InputMethodEngine {
          self.end_composition();
      }
  

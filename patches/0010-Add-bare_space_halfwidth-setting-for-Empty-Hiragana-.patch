@@ -1,7 +1,7 @@
-From d9e4fa1aed9e1f27a074de7fa36d12b2eb0de459 Mon Sep 17 00:00:00 2001
+From 20d9fc43bc914c4d270c26776aec7cf6a423c5f4 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Fri, 3 Jul 2026 22:43:46 +0900
-Subject: [PATCH 10/17] Add bare_space_halfwidth setting for Empty Hiragana
+Subject: [PATCH 10/18] Add bare_space_halfwidth setting for Empty Hiragana
  mode
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -32,7 +32,7 @@ the flag enabled.
  7 files changed, 107 insertions(+), 6 deletions(-)
 
 diff --git a/docs/configuration.md b/docs/configuration.md
-index ce36d30..ce96fca 100644
+index 468d648..766e16a 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -40,6 +40,7 @@ digit = "half"                 # 0-9
@@ -42,9 +42,9 @@ index ce36d30..ce96fca 100644
 +bare_space_halfwidth = false   # 何も入力していないときの Space を半角にする（既定OFF＝全角）
  ```
  
- `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回利用時にHugging Faceから自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
+ `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回起動時にHugging Faceからバックグラウンドで自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
 diff --git a/docs/key-bindings.md b/docs/key-bindings.md
-index 3a9ee53..c5d6e46 100644
+index 53eca16..bd96489 100644
 --- a/docs/key-bindings.md
 +++ b/docs/key-bindings.md
 @@ -22,7 +22,8 @@ Karukan のキーバインド一覧です。共通キーバインドは Linux (f

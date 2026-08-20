@@ -1,7 +1,7 @@
-From 3ca6cefc20995a54be0cc4109bd5351c9c7b6115 Mon Sep 17 00:00:00 2001
+From 5a4e83579b7e54c05d13a9e76f2318686e04625e Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Wed, 1 Jul 2026 14:55:51 +0900
-Subject: [PATCH 09/17] Add Shift+Space gesture for half-width space input
+Subject: [PATCH 09/18] Add Shift+Space gesture for half-width space input
 
 In Empty state, Shift+Space commits a literal half-width ASCII space
 regardless of input mode, overriding the default bare-Space full-width
@@ -25,7 +25,7 @@ includes tests for both enabled and default-off behavior.
  7 files changed, 177 insertions(+), 30 deletions(-)
 
 diff --git a/docs/configuration.md b/docs/configuration.md
-index 862f96d..ce36d30 100644
+index b33ec82..468d648 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -36,6 +36,10 @@ space = "half"                 # かな入力中のスペースキーが入力
@@ -38,9 +38,9 @@ index 862f96d..ce36d30 100644
 +shift_space_halfwidth = false  # Shift+Space で半角スペースを入力（既定OFF）
  ```
  
- `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回利用時にHugging Faceから自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
+ `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回起動時にHugging Faceからバックグラウンドで自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
 diff --git a/docs/key-bindings.md b/docs/key-bindings.md
-index 9afd733..3a9ee53 100644
+index 4919581..53eca16 100644
 --- a/docs/key-bindings.md
 +++ b/docs/key-bindings.md
 @@ -22,7 +22,8 @@ Karukan のキーバインド一覧です。共通キーバインドは Linux (f

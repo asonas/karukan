@@ -1,7 +1,7 @@
-From 9fee2c01fb140a6332ba7337d0c6d75a67544fce Mon Sep 17 00:00:00 2001
+From 8d124043b77aa8b22652012ba856d1fc14393106 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Wed, 1 Jul 2026 15:22:27 +0900
-Subject: [PATCH 04/17] Add ctrl_space_fullwidth configuration option
+Subject: [PATCH 04/18] Add ctrl_space_fullwidth configuration option
 
 Add a new ctrl_space_fullwidth configuration to EngineConfig that
 controls whether Ctrl+Space inputs a full-width space (U+3000). When

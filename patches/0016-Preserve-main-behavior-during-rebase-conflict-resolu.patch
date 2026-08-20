@@ -1,7 +1,7 @@
-From bc71899417a4e1e0118ff8c664c9f90a7bce3a41 Mon Sep 17 00:00:00 2001
+From 4a0d1933141c6c99402f751f5a1d6e0b70efe567 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Wed, 12 Aug 2026 23:55:51 +0900
-Subject: [PATCH 16/17] Preserve main behavior during rebase conflict
+Subject: [PATCH 16/18] Preserve main behavior during rebase conflict
  resolution
 
 Keep the default key setting, candidate handling, and composition
@@ -62,10 +62,10 @@ index 863c4e7..856c825 100644
              CandidateSource::Rewriter => "\u{1F504}",       // 🔄
              CandidateSource::Fallback => "",
 diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
-index 09116d1..72c36a4 100644
+index 0e9f2d9..c2f53b4 100644
 --- a/karukan-im/core/src/core/engine/conversion.rs
 +++ b/karukan-im/core/src/core/engine/conversion.rs
-@@ -710,14 +710,9 @@ impl InputMethodEngine {
+@@ -729,14 +729,9 @@ impl InputMethodEngine {
  
      /// Record a conversion selection in the learning cache.
      ///
@@ -98,10 +98,10 @@ index 010c6fd..c6f6424 100644
              // pair rides at the tail (lowest priority).
              CandidateSource::Rewriter => {
 diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
-index cc635fd..7588cea 100644
+index a8abee8..9544e98 100644
 --- a/karukan-im/core/src/core/engine/mod.rs
 +++ b/karukan-im/core/src/core/engine/mod.rs
-@@ -392,9 +392,7 @@ impl InputMethodEngine {
+@@ -399,9 +399,7 @@ impl InputMethodEngine {
      /// the user dictated the form (F6–F10, Muhenkan), so there is nothing to
      /// learn from the choice.
      pub(super) fn commit_text(&mut self, text: String) -> EngineResult {

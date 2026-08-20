@@ -1,7 +1,7 @@
-From d7e356f9a886dd4845c44b3c2bae1658e71493fd Mon Sep 17 00:00:00 2001
+From 15fe75b183c36efe7421311e938e16dc5da09b93 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Wed, 1 Jul 2026 15:25:37 +0900
-Subject: [PATCH 05/17] Gate Ctrl+Space behind config option
+Subject: [PATCH 05/18] Gate Ctrl+Space behind config option
 
 When ctrl_space_fullwidth is false, Ctrl+Space key presses are
 not consumed and pass through to the OS, allowing window-switching

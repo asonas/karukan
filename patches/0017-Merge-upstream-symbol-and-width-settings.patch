@@ -1,7 +1,7 @@
-From 2d51fd262a8750c9a312ce0d981958a0d52226b4 Mon Sep 17 00:00:00 2001
+From 708092dec472047beb54df11b27173be5a9a68b8 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Fri, 14 Aug 2026 21:14:59 +0900
-Subject: [PATCH 17/17] Merge upstream symbol and width settings
+Subject: [PATCH 17/18] Merge upstream symbol and width settings
 
 ---
  karukan-im/core/src/config/settings.rs        |  8 +++----
@@ -37,7 +37,7 @@ index 4efa783..9fd106f 100644
  
  /// Aux-line settings
 diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
-index 7588cea..38a176d 100644
+index 9544e98..ef6d9bb 100644
 --- a/karukan-im/core/src/core/engine/mod.rs
 +++ b/karukan-im/core/src/core/engine/mod.rs
 @@ -29,7 +29,7 @@ mod tests;
@@ -49,7 +49,7 @@ index 7588cea..38a176d 100644
  };
  use tracing::{debug, trace};
  
-@@ -226,6 +226,7 @@ impl InputMethodEngine {
+@@ -232,6 +232,7 @@ impl InputMethodEngine {
          if config.date_conversion && !config.date_formats.is_empty() {
              chain.add(Box::new(DateRewriter::new(config.date_formats.clone())));
          }

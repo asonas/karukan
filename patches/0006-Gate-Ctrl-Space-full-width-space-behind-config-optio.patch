@@ -1,7 +1,7 @@
-From 782e4ff82b7964006a0f5927cacbc81eccf94766 Mon Sep 17 00:00:00 2001
+From 174af5d1c5f8f43ced614bdea717a658eb7e7ba4 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Wed, 1 Jul 2026 15:30:13 +0900
-Subject: [PATCH 06/17] Gate Ctrl+Space full-width space behind config option
+Subject: [PATCH 06/18] Gate Ctrl+Space full-width space behind config option
 
 Make the Ctrl+Space full-width space insertion configurable via the
 `ctrl_space_fullwidth` setting. When disabled, Ctrl+Space passes through

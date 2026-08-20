@@ -74,6 +74,7 @@ done
 | Shift+Space による半角スペース入力 | [PR #43](https://github.com/togatoga/karukan/pull/43) | `3cefd17` |
 | macOS 候補ウィンドウの列揃え | [PR #50](https://github.com/togatoga/karukan/pull/50) | `c63f651` |
 | 日付変換と候補順位・学習制御 | [PR #54](https://github.com/togatoga/karukan/pull/54) | `f869645`, `5bddfdf` |
+| 部分変換・文節移動と選択中文節の表示 | [PR #57](https://github.com/togatoga/karukan/pull/57) | `389f024` |
 | 最新 upstream の `LiveConversion.shown` への互換調整 | [PR #85](https://github.com/togatoga/karukan/pull/85) | `91d053c` |
 | rebase 時の競合解消を保持する互換調整 | downstream 固有 | `bc71899` |
 | upstream の記号・幅設定を採用しつつ既存の空白挙動を維持する互換調整 | downstream 固有 | `2d51fd2` |

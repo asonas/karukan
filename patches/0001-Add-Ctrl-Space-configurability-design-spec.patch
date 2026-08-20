@@ -1,7 +1,7 @@
-From 3e121858bcbb545c479903adc2ab32c676955300 Mon Sep 17 00:00:00 2001
+From f014ae5d044e3d171560e8362a40ac874a25aa86 Mon Sep 17 00:00:00 2001
 From: Yuya Fujiwara <hzw1258@gmail.com>
 Date: Wed, 1 Jul 2026 15:11:13 +0900
-Subject: [PATCH 01/17] Add Ctrl+Space configurability design spec
+Subject: [PATCH 01/18] Add Ctrl+Space configurability design spec
 
 Defines the design for making Ctrl+Space behavior configurable via
 config.toml. Currently hardcoded to intercept Ctrl+Space for
