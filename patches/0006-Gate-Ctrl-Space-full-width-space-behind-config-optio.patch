@@ -1,0 +1,99 @@
+From 782e4ff82b7964006a0f5927cacbc81eccf94766 Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Wed, 1 Jul 2026 15:30:13 +0900
+Subject: [PATCH 06/17] Gate Ctrl+Space full-width space behind config option
+
+Make the Ctrl+Space full-width space insertion configurable via the
+`ctrl_space_fullwidth` setting. When disabled, Ctrl+Space passes through
+to the OS instead of being consumed by the engine.
+
+This prevents the fall-through bug where Ctrl+Space would trigger
+conversion mode if the bare-Space handler were to execute. An explicit
+return statement ensures correct control flow regardless of the config
+setting.
+
+Add tests to verify both enabled and disabled behavior while composing.
+---
+ karukan-im/core/src/core/engine/input.rs      | 19 ++++++++++++
+ .../core/src/core/engine/tests/basic.rs       | 31 +++++++++++++++++++
+ 2 files changed, 50 insertions(+)
+
+diff --git a/karukan-im/core/src/core/engine/input.rs b/karukan-im/core/src/core/engine/input.rs
+index 9207faf..5f3bfc3 100644
+--- a/karukan-im/core/src/core/engine/input.rs
++++ b/karukan-im/core/src/core/engine/input.rs
+@@ -233,6 +233,13 @@ impl InputMethodEngine {
+         self.refresh_input_state()
+     }
+ 
++    /// Insert a full-width space (U+3000), independently of the configured
++    /// ordinary space style.
++    pub(super) fn input_fullwidth_space(&mut self) -> EngineResult {
++        self.edit_with_chunk_breaks(|e| e.input_buf.push_direct('\u{3000}'));
++        self.refresh_input_state()
++    }
++
+     /// Process key in hiragana input state
+     pub(super) fn process_key_composing(
+         &mut self,
+@@ -242,6 +249,18 @@ impl InputMethodEngine {
+         // Handle Ctrl+key shortcuts
+         if key.modifiers.control_key {
+             match key.keysym {
++                // Ctrl+Space: insert full-width space (U+3000), unless
++                // disabled in config — then pass through to the OS. Must
++                // return explicitly here: falling through would let the
++                // bare-Space arm below treat Ctrl+Space as the conversion
++                // trigger.
++                Keysym::SPACE => {
++                    return if self.config.ctrl_space_fullwidth {
++                        self.input_fullwidth_space()
++                    } else {
++                        EngineResult::not_consumed()
++                    };
++                }
+                 // Ctrl+J: start a new live-conversion chunk at the caret
+                 Keysym::KEY_J | Keysym::KEY_J_UPPER => return self.insert_chunk_break(),
+                 // Ctrl+K: enter katakana mode
+diff --git a/karukan-im/core/src/core/engine/tests/basic.rs b/karukan-im/core/src/core/engine/tests/basic.rs
+index d1f2f51..1f1e92f 100644
+--- a/karukan-im/core/src/core/engine/tests/basic.rs
++++ b/karukan-im/core/src/core/engine/tests/basic.rs
+@@ -232,3 +232,34 @@ fn ctrl_space_passes_through_in_empty_when_disabled() {
+         result.actions
+     );
+ }
++
++#[test]
++fn ctrl_space_inserts_fullwidth_space_while_composing_when_enabled() {
++    let mut engine = InputMethodEngine::new();
++    engine.process_key(&press('a')); // preedit "あ", Composing
++    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
++    assert!(result.consumed);
++    assert!(matches!(engine.state(), InputState::Composing { .. }));
++    assert!(
++        engine.input_buf.text.contains('\u{3000}'),
++        "buffer should contain a full-width space, got {:?}",
++        engine.input_buf.text
++    );
++}
++
++#[test]
++fn ctrl_space_passes_through_while_composing_when_disabled() {
++    let config = EngineConfig {
++        ctrl_space_fullwidth: false,
++        ..EngineConfig::default()
++    };
++    let mut engine = InputMethodEngine::with_config(config);
++    engine.process_key(&press('a')); // preedit "あ", Composing
++    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
++    assert!(!result.consumed);
++    // Must NOT trigger conversion (the fall-through bug guard) and must
++    // NOT insert a full-width space.
++    assert!(matches!(engine.state(), InputState::Composing { .. }));
++    assert_eq!(engine.preedit().unwrap().text(), "あ");
++    assert!(!engine.input_buf.text.contains('\u{3000}'));
++}
+-- 
+2.55.0
+

@@ -1,0 +1,367 @@
+From 3ca6cefc20995a54be0cc4109bd5351c9c7b6115 Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Wed, 1 Jul 2026 14:55:51 +0900
+Subject: [PATCH 09/17] Add Shift+Space gesture for half-width space input
+
+In Empty state, Shift+Space commits a literal half-width ASCII space
+regardless of input mode, overriding the default bare-Space full-width
+behavior. In Composing state, the gesture commits the current preedit
+(like Enter) then appends a half-width space instead of triggering
+conversion, ensuring users always end up with a literal space.
+
+The feature is gated behind a new optional config setting
+keys.shift_space_halfwidth (default false), preserving backward
+compatibility. Wires KeysSettings through EngineConfig, adds the [keys]
+section to default.toml, documents the key binding in README, and
+includes tests for both enabled and default-off behavior.
+---
+ docs/configuration.md                         |  4 +
+ docs/key-bindings.md                          |  3 +-
+ karukan-im/core/config/default.toml           |  5 ++
+ karukan-im/core/src/config/settings.rs        | 30 +++++++
+ karukan-im/core/src/core/engine/input.rs      | 76 +++++++++++------
+ .../core/src/core/engine/tests/basic.rs       | 84 +++++++++++++++++--
+ karukan-im/core/src/core/engine/types.rs      |  5 ++
+ 7 files changed, 177 insertions(+), 30 deletions(-)
+
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 862f96d..ce36d30 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -36,6 +36,10 @@ space = "half"                 # かな入力中のスペースキーが入力
+ kana_symbol = "full"             # 。、「」・
+ ascii_symbol = "full"          # ?! ,. (){}[] @ : ~ ほかの記号
+ digit = "half"                 # 0-9
++
++[keys]
++ctrl_space_fullwidth = true    # Ctrl+Space で全角スペースを入力（既定ON。OFFにするとOSへ素通し）
++shift_space_halfwidth = false  # Shift+Space で半角スペースを入力（既定OFF）
+ ```
+ 
+ `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回利用時にHugging Faceから自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
+diff --git a/docs/key-bindings.md b/docs/key-bindings.md
+index 9afd733..3a9ee53 100644
+--- a/docs/key-bindings.md
++++ b/docs/key-bindings.md
+@@ -22,7 +22,8 @@ Karukan のキーバインド一覧です。共通キーバインドは Linux (f
+ | Ctrl+K | カタカナモードに切り替え |
+ | Ctrl+I | 変換を開始して🤖AI候補のビューを直接開く |
+ | Ctrl+T / Ctrl+R | 変換を開始してソース絞り込みビューへ（Ctrl+T は📝学習から、Ctrl+R は🔄記号変換から） |
+-| Shift+Space | 全角スペースを入力。入力中は設定した幅の空白を挟む（[詳細](symbols.md)） |
++| Ctrl+Space | 全角スペースを入力 |
++| Shift+Space | 半角スペースを入力（`shift_space_halfwidth = true` のとき有効。入力中は確定してから半角スペース。既定は無効） |
+ 
+ 未入力の状態で `:` を打つと絵文字モードになり、`:smile` のようなクエリで絵文字を検索できます。Enterで先頭の絵文字候補を確定、Escapeで入力した文字列をそのまま確定します。
+ 
+diff --git a/karukan-im/core/config/default.toml b/karukan-im/core/config/default.toml
+index 05e9fd2..0e1cde9 100644
+--- a/karukan-im/core/config/default.toml
++++ b/karukan-im/core/config/default.toml
+@@ -100,3 +100,8 @@ digit = "half"
+ # false にすると Karukan は Ctrl+Space を横取りせず OS に渡す
+ # （macOS/Linux のウインドウ切替などのショートカットが効くようになる）。
+ ctrl_space_fullwidth = true
++# Shift+Space で半角スペースを入力する。
++# true にすると、モードを問わず Shift+Space が半角スペースをコミットする
++# （Composing 中は現在のプリエディットを確定してから半角スペースを付ける）。
++# false（既定）では素の Space と同じ挙動のまま。
++shift_space_halfwidth = false
+diff --git a/karukan-im/core/src/config/settings.rs b/karukan-im/core/src/config/settings.rs
+index a68c142..4995fe4 100644
+--- a/karukan-im/core/src/config/settings.rs
++++ b/karukan-im/core/src/config/settings.rs
+@@ -169,6 +169,11 @@ pub struct KeysSettings {
+     /// When false, Karukan does not intercept Ctrl+Space and lets it pass
+     /// through to the OS (so window-switching shortcuts etc. still work).
+     pub ctrl_space_fullwidth: bool,
++    /// Use Shift+Space to input a half-width ASCII space.
++    /// When true, Shift+Space commits a half-width space regardless of mode
++    /// (in Composing it first commits the current preedit, like Enter). When
++    /// false (default), Shift+Space keeps the bare-Space behavior.
++    pub shift_space_halfwidth: bool,
+ }
+ 
+ impl Default for Settings {
+@@ -430,6 +435,31 @@ use_context = false
+         assert!(!settings.conversion.use_context);
+     }
+ 
++    #[test]
++    fn test_keys_default_shift_space_halfwidth_is_off() {
++        let settings = Settings::default();
++        assert!(!settings.keys.shift_space_halfwidth);
++    }
++
++    #[test]
++    fn test_keys_override_shift_space_halfwidth() {
++        let mut file = NamedTempFile::new().unwrap();
++        writeln!(
++            file,
++            r#"
++[keys]
++shift_space_halfwidth = true
++"#
++        )
++        .unwrap();
++
++        let path = file.path().to_path_buf();
++        let settings = Settings::load_from(&path).unwrap();
++        assert!(settings.keys.shift_space_halfwidth);
++        // Sections the user did not specify still fall back to defaults.
++        assert_eq!(settings.conversion.num_candidates, 9);
++    }
++
+     #[test]
+     fn test_user_dict_dir() {
+         let dir = Settings::user_dict_dir();
+diff --git a/karukan-im/core/src/core/engine/input.rs b/karukan-im/core/src/core/engine/input.rs
+index 7e66e80..8273f5f 100644
+--- a/karukan-im/core/src/core/engine/input.rs
++++ b/karukan-im/core/src/core/engine/input.rs
+@@ -127,21 +127,26 @@ impl InputMethodEngine {
+                 .with_action(EngineAction::UpdateAuxText(self.format_aux_composing()));
+         }
+ 
+-        // Shift+Space on its own is the "I want a full-width space" gesture,
+-        // whatever the setting says. Committed directly, so no composition
+-        // opens for a second Space to convert.
+-        if shift_active && key.keysym == Keysym::SPACE && !key.modifiers.control_key {
+-            return EngineResult::consumed()
+-                .with_action(EngineAction::Commit("\u{3000}".to_string()));
++        // Shift+Space (opt-in via `shift_space_halfwidth`): commit a literal
++        // half-width ASCII space, regardless of mode. This overrides the
++        // bare-Space full-width behavior below so users have a dedicated
++        // gesture for a plain half-width space. Space has no shifted keysym
++        // variant, so the `shift_active` flag arrives reliably from both
++        // frontends. When the option is off, fall through to the bare-Space
++        // handling so the existing behavior is unchanged.
++        if self.config.shift_space_halfwidth
++            && shift_active
++            && key.keysym == Keysym::SPACE
++            && !key.modifiers.control_key
++            && !key.modifiers.alt_key
++        {
++            return EngineResult::consumed().with_action(EngineAction::Commit(" ".to_string()));
+         }
+ 
+-        // Bare Space from Empty: a full-width space is committed directly —
+-        // without entering Composing, where a second Space would open an
+-        // unwanted candidate window. A half-width one is passed through, so
+-        // the application keeps whatever it does with Space (scrolling a
+-        // page) when the IME has nothing to compose.
++        // Bare Space from Empty state: Hiragana mode commits a full-width
++        // space directly, while other modes pass it through to the OS.
+         if key.keysym == Keysym::SPACE && !key.modifiers.control_key && !key.modifiers.alt_key {
+-            return if self.space_char() == '\u{3000}' {
++            return if self.mode.current() == InputMode::Hiragana {
+                 EngineResult::consumed().with_action(EngineAction::Commit("\u{3000}".to_string()))
+             } else {
+                 EngineResult::not_consumed()
+@@ -223,16 +228,6 @@ impl InputMethodEngine {
+         }
+     }
+ 
+-    /// Insert the configured space after the active elements. Bare Space
+-    /// converts mid-composition, so Shift+Space is the only way to put a
+-    /// space into a composition — and the width wanted there is the
+-    /// everyday one, not the exception Shift+Space commits from Empty.
+-    pub(super) fn input_space(&mut self) -> EngineResult {
+-        let space = self.space_char();
+-        self.edit_with_chunk_breaks(|e| e.input_buf.push_direct(space));
+-        self.refresh_input_state()
+-    }
+-
+     /// Insert a full-width space (U+3000), independently of the configured
+     /// ordinary space style.
+     pub(super) fn input_fullwidth_space(&mut self) -> EngineResult {
+@@ -296,13 +291,26 @@ impl InputMethodEngine {
+             }
+         }
+ 
++        // Shift+Space (opt-in via `shift_space_halfwidth`): commit the current
++        // preedit (like Enter) and append a half-width space, so the gesture
++        // yields a literal ASCII space instead of triggering conversion. Must
++        // precede the bare-Space conversion trigger in the match below. When
++        // the option is off, fall through so Shift+Space keeps triggering
++        // conversion like a bare Space.
++        if self.config.shift_space_halfwidth
++            && shift_active
++            && key.keysym == Keysym::SPACE
++            && !key.modifiers.control_key
++            && !key.modifiers.alt_key
++        {
++            return self.commit_composing_with_halfwidth_space();
++        }
++
+         match key.keysym {
+             Keysym::RETURN => self.commit_composing(),
+             Keysym::ESCAPE => self.cancel_composing(),
+             Keysym::BACKSPACE => self.backspace_composing(),
+             Keysym::DELETE => self.delete_composing(),
+-            // Shift+Space: a space, since bare Space converts here.
+-            Keysym::SPACE if shift_active => self.input_space(),
+             Keysym::SPACE if self.mode.current() == InputMode::Alphabet => {
+                 let space = self.space_char();
+                 self.input_char(space)
+@@ -451,6 +459,26 @@ impl InputMethodEngine {
+             .with_action(EngineAction::HideAuxText)
+     }
+ 
++    /// Commit the current composing text (identical to Enter) and append a
++    /// half-width ASCII space. Backs the Shift+Space gesture: the user always
++    /// ends up with a literal space after whatever was being composed. When
++    /// the buffer is empty, emits a bare space so the gesture still works.
++    pub(super) fn commit_composing_with_halfwidth_space(&mut self) -> EngineResult {
++        let mut result = self.commit_composing();
++        let appended = result.actions.iter_mut().any(|action| match action {
++            EngineAction::Commit(text) => {
++                text.push(' ');
++                true
++            }
++            _ => false,
++        });
++        if appended {
++            result
++        } else {
++            result.with_action(EngineAction::Commit(" ".to_string()))
++        }
++    }
++
+     /// Cancel the current input
+     /// In live conversion mode: first Escape clears live conversion and shows hiragana,
+     /// second Escape cancels input entirely.
+diff --git a/karukan-im/core/src/core/engine/tests/basic.rs b/karukan-im/core/src/core/engine/tests/basic.rs
+index 6da541e..785a45a 100644
+--- a/karukan-im/core/src/core/engine/tests/basic.rs
++++ b/karukan-im/core/src/core/engine/tests/basic.rs
+@@ -108,18 +108,92 @@ fn double_space_in_empty_hiragana_commits_two_fullwidth_spaces() {
+ }
+ 
+ #[test]
+-fn space_in_empty_katakana_follows_the_setting() {
+-    // Katakana is kana input, so it takes the same space as hiragana.
+-    let mut engine = fullwidth_space_engine();
+-    engine.mode.set(InputMode::Katakana);
++fn shift_space_in_empty_commits_halfwidth_space_when_enabled() {
++    // With `shift_space_halfwidth` on, Shift+Space emits a literal half-width
++    // ASCII space regardless of mode — a deliberate override of the
++    // bare-Space full-width behavior.
++    let mut engine = InputMethodEngine::new();
++    engine.config.shift_space_halfwidth = true;
++    assert_eq!(engine.mode.current(), InputMode::Hiragana);
+ 
+-    let result = engine.process_key(&press_key(Keysym::SPACE));
++    let result = engine.process_key(&press_shift(' '));
++    assert!(result.consumed);
++    assert!(matches!(engine.state(), InputState::Empty));
++    let committed = result.actions.iter().find_map(|a| match a {
++        EngineAction::Commit(t) => Some(t.clone()),
++        _ => None,
++    });
++    assert_eq!(committed.as_deref(), Some(" "));
++}
++
++#[test]
++fn shift_space_in_composing_commits_then_halfwidth_space_when_enabled() {
++    // With `shift_space_halfwidth` on, Shift+Space while composing commits the
++    // current preedit (like Enter) and appends a half-width space, then
++    // returns to Empty. It must NOT trigger conversion the way a bare Space
++    // does.
++    let mut engine = InputMethodEngine::new();
++    engine.config.shift_space_halfwidth = true;
++    engine.process_key(&press('a'));
++    engine.process_key(&press('i'));
++    assert_eq!(engine.preedit().unwrap().text(), "あい");
++
++    let result = engine.process_key(&press_shift(' '));
++    assert!(result.consumed);
++    assert!(matches!(engine.state(), InputState::Empty));
++    let committed = result.actions.iter().find_map(|a| match a {
++        EngineAction::Commit(t) => Some(t.clone()),
++        _ => None,
++    });
++    assert_eq!(committed.as_deref(), Some("あい "));
++}
++
++#[test]
++fn shift_space_off_by_default_keeps_fullwidth_in_empty() {
++    // Default config (`shift_space_halfwidth` off): Shift+Space in Empty
++    // Hiragana keeps the bare-Space behavior and commits a full-width `　`.
++    let mut engine = InputMethodEngine::new();
++    assert!(!engine.config.shift_space_halfwidth);
++
++    let result = engine.process_key(&press_shift(' '));
++    assert!(matches!(engine.state(), InputState::Empty));
+     let committed = result.actions.iter().find_map(|a| match a {
+         EngineAction::Commit(t) => Some(t.clone()),
+         _ => None,
+     });
+     assert_eq!(committed.as_deref(), Some("\u{3000}"));
++}
++
++#[test]
++fn shift_space_off_by_default_triggers_conversion_in_composing() {
++    // Default config (`shift_space_halfwidth` off): Shift+Space while composing
++    // keeps the bare-Space behavior and triggers conversion.
++    let mut engine = InputMethodEngine::new();
++    assert!(!engine.config.shift_space_halfwidth);
++    engine.process_key(&press('a'));
++    engine.process_key(&press('i'));
++    assert_eq!(engine.preedit().unwrap().text(), "あい");
++
++    let result = engine.process_key(&press_shift(' '));
++    assert!(result.consumed);
++    assert!(matches!(engine.state(), InputState::Conversion { .. }));
++}
++
++#[test]
++fn space_in_empty_katakana_passes_through() {
++    // Non-Hiragana modes pass the bare Space through to the OS so the
++    // application gets a normal half-width ASCII space.
++    let mut engine = InputMethodEngine::new();
++    engine.mode.set(InputMode::Katakana);
++
++    let result = engine.process_key(&press_key(Keysym::SPACE));
++    assert!(!result.consumed);
+     assert!(matches!(engine.state(), InputState::Empty));
++    assert!(
++        result.actions.is_empty(),
++        "expected no actions, got {:?}",
++        result.actions
++    );
+ }
+ 
+ #[test]
+diff --git a/karukan-im/core/src/core/engine/types.rs b/karukan-im/core/src/core/engine/types.rs
+index a90e5d2..8fdfce6 100644
+--- a/karukan-im/core/src/core/engine/types.rs
++++ b/karukan-im/core/src/core/engine/types.rs
+@@ -110,6 +110,9 @@ pub struct EngineConfig {
+     /// Whether Ctrl+Space inputs a full-width space (U+3000).
+     /// When false, Ctrl+Space is not consumed and passes through to the OS.
+     pub ctrl_space_fullwidth: bool,
++    /// Whether Shift+Space inputs a half-width ASCII space.
++    /// When false, Shift+Space keeps the bare-Space behavior.
++    pub shift_space_halfwidth: bool,
+ }
+ 
+ impl EngineConfig {
+@@ -138,6 +141,7 @@ impl EngineConfig {
+             width: settings.width,
+             space: settings.symbol.space,
+             ctrl_space_fullwidth: settings.keys.ctrl_space_fullwidth,
++            shift_space_halfwidth: settings.keys.shift_space_halfwidth,
+         }
+     }
+ }
+@@ -162,6 +166,7 @@ impl Default for EngineConfig {
+             width: WidthRules::default(),
+             space: SpaceStyle::default(),
+             ctrl_space_fullwidth: true,
++            shift_space_halfwidth: false,
+         }
+     }
+ }
+-- 
+2.55.0
+

@@ -1,0 +1,151 @@
+From bc71899417a4e1e0118ff8c664c9f90a7bce3a41 Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Wed, 12 Aug 2026 23:55:51 +0900
+Subject: [PATCH 16/17] Preserve main behavior during rebase conflict
+ resolution
+
+Keep the default key setting, candidate handling, and composition
+cleanup aligned with the existing main branch behavior.
+---
+ karukan-im/core/config/default.toml               |  4 ++--
+ karukan-im/core/src/config/settings.rs            |  6 +++---
+ karukan-im/core/src/core/candidate.rs             |  1 +
+ karukan-im/core/src/core/engine/conversion.rs     | 11 +++--------
+ karukan-im/core/src/core/engine/filter.rs         |  3 +++
+ karukan-im/core/src/core/engine/mod.rs            |  4 +---
+ karukan-im/core/src/core/engine/tests/rewriter.rs |  9 ++++++---
+ 7 files changed, 19 insertions(+), 19 deletions(-)
+
+diff --git a/karukan-im/core/config/default.toml b/karukan-im/core/config/default.toml
+index af10e96..2793e79 100644
+--- a/karukan-im/core/config/default.toml
++++ b/karukan-im/core/config/default.toml
+@@ -112,8 +112,8 @@ ctrl_space_fullwidth = true
+ # Shift+Space で半角スペースを入力する。
+ # true にすると、モードを問わず Shift+Space が半角スペースをコミットする
+ # （Composing 中は現在のプリエディットを確定してから半角スペースを付ける）。
+-# false では素の Space と同じ挙動のまま。
+-shift_space_halfwidth = true
++# false（既定）では素の Space と同じ挙動のまま。
++shift_space_halfwidth = false
+ # 素の Space を Empty 状態のひらがなモードで半角スペースにする。
+ # true（既定）では、ひらがなモードでの素の Space が全角 `　` ではなく
+ # 半角スペースをコミットする（全角スペースは Ctrl+Space で入力できる）。
+diff --git a/karukan-im/core/src/config/settings.rs b/karukan-im/core/src/config/settings.rs
+index 94012c3..4efa783 100644
+--- a/karukan-im/core/src/config/settings.rs
++++ b/karukan-im/core/src/config/settings.rs
+@@ -480,10 +480,10 @@ formats = ["%Y/%m/%d"]
+     }
+ 
+     #[test]
+-    fn test_keys_default_shift_space_halfwidth_is_on() {
+-        // This branch's bundled default enables Shift+Space half-width input.
++    fn test_keys_default_shift_space_halfwidth_is_off() {
++        // Shift+Space remains opt-in; the bundled default is false.
+         let settings = Settings::default();
+-        assert!(settings.keys.shift_space_halfwidth);
++        assert!(!settings.keys.shift_space_halfwidth);
+     }
+ 
+     #[test]
+diff --git a/karukan-im/core/src/core/candidate.rs b/karukan-im/core/src/core/candidate.rs
+index 863c4e7..856c825 100644
+--- a/karukan-im/core/src/core/candidate.rs
++++ b/karukan-im/core/src/core/candidate.rs
+@@ -48,6 +48,7 @@ impl CandidateSource {
+             CandidateSource::UserDictionary => "\u{1F464}", // 👤
+             CandidateSource::Learning => "\u{1F4DD}",       // 📝
+             CandidateSource::Model => "\u{1F916}",          // 🤖
++            CandidateSource::Date => "\u{1F4C5}",           // 📅
+             CandidateSource::Dictionary => "\u{1F4DA}",     // 📚
+             CandidateSource::Rewriter => "\u{1F504}",       // 🔄
+             CandidateSource::Fallback => "",
+diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
+index 09116d1..72c36a4 100644
+--- a/karukan-im/core/src/core/engine/conversion.rs
++++ b/karukan-im/core/src/core/engine/conversion.rs
+@@ -710,14 +710,9 @@ impl InputMethodEngine {
+ 
+     /// Record a conversion selection in the learning cache.
+     ///
+-    /// Date conversions (`きょう` → `2026-07-16`) are never learned: their
+-    /// surface is tied to the day it was committed, so a learned entry would
+-    /// keep resurfacing a stale date (e.g. `2026-07-13` days later) at the top
+-    /// of the candidate list. The guard is surface-specific — it only drops the
+-    /// calendar-date surfaces the `DateRewriter` would emit today, so a normal
+-    /// conversion of the same reading (`きょう` → `今日`) is still learned.
+-    /// Emoji queries are also excluded: the buffer is a `:query`, not a kana
+-    /// reading, and would corrupt the kana-keyed cache.
++    /// Emoji queries and date conversions are excluded: emoji readings do not
++    /// belong in the kana-keyed cache, while date surfaces become stale when
++    /// the day changes.
+     pub(super) fn record_learning(&mut self, reading: &str, surface: &str) {
+         if self.mode.current() == InputMode::Emoji || self.is_date_surface(reading, surface) {
+             return;
+diff --git a/karukan-im/core/src/core/engine/filter.rs b/karukan-im/core/src/core/engine/filter.rs
+index 010c6fd..c6f6424 100644
+--- a/karukan-im/core/src/core/engine/filter.rs
++++ b/karukan-im/core/src/core/engine/filter.rs
+@@ -173,6 +173,9 @@ impl InputMethodEngine {
+                 .map(|ac| ac.into_candidate(&base))
+                 .collect(),
+             CandidateSource::Model => self.model_source_view(reading),
++            // Date candidates are promoted into the mixed list but are not a
++            // separate stop in the source-filter cycle.
++            CandidateSource::Date => Vec::new(),
+             // Rewriter variants regenerate from the reading; the plain kana
+             // pair rides at the tail (lowest priority).
+             CandidateSource::Rewriter => {
+diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
+index cc635fd..7588cea 100644
+--- a/karukan-im/core/src/core/engine/mod.rs
++++ b/karukan-im/core/src/core/engine/mod.rs
+@@ -392,9 +392,7 @@ impl InputMethodEngine {
+     /// the user dictated the form (F6–F10, Muhenkan), so there is nothing to
+     /// learn from the choice.
+     pub(super) fn commit_text(&mut self, text: String) -> EngineResult {
+-        self.input_buf.clear();
+-        self.live.shown = false;
+-        self.chunks.clear();
++        self.clear_composition();
+         self.state = InputState::Empty;
+         self.mode.exit_temporary();
+         let mut result = EngineResult::consumed()
+diff --git a/karukan-im/core/src/core/engine/tests/rewriter.rs b/karukan-im/core/src/core/engine/tests/rewriter.rs
+index eb871b3..d5ddafb 100644
+--- a/karukan-im/core/src/core/engine/tests/rewriter.rs
++++ b/karukan-im/core/src/core/engine/tests/rewriter.rs
+@@ -202,7 +202,8 @@ fn date_conversion_enabled_emits_date_candidate_for_kyou() {
+     // typing `きょう` yields a `YYYY-MM-DD` candidate tagged with the Date
+     // source, promoted onto the first page rather than the rewriter tail.
+     let mut engine = composing_engine("きょう");
+-    let candidates = engine.build_conversion_candidates("きょう", "きょう", "", 9, false);
++    let candidates =
++        engine.build_conversion_candidates("きょう", "きょう", "", 9, LearningLookup::Use);
+     let pos = candidates
+         .iter()
+         .position(|c| c.source == CandidateSource::Date && looks_like_iso_date(&c.text));
+@@ -250,7 +251,8 @@ fn date_conversion_disabled_emits_no_date_candidate() {
+         ..EngineConfig::default()
+     };
+     let mut engine = composing_engine_with_config("きょう", config);
+-    let candidates = engine.build_conversion_candidates("きょう", "きょう", "", 9, false);
++    let candidates =
++        engine.build_conversion_candidates("きょう", "きょう", "", 9, LearningLookup::Use);
+     assert!(
+         !candidates.iter().any(|c| looks_like_iso_date(&c.text)),
+         "date candidate present despite date_conversion = false"
+@@ -261,7 +263,8 @@ fn date_conversion_disabled_emits_no_date_candidate() {
+ fn non_date_reading_emits_no_date_candidate() {
+     // A reading that is not a date word must not gain a date candidate.
+     let mut engine = composing_engine("てすと");
+-    let candidates = engine.build_conversion_candidates("てすと", "てすと", "", 9, false);
++    let candidates =
++        engine.build_conversion_candidates("てすと", "てすと", "", 9, LearningLookup::Use);
+     assert!(!candidates.iter().any(|c| looks_like_iso_date(&c.text)));
+ }
+ 
+-- 
+2.55.0
+

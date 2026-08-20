@@ -1,0 +1,617 @@
+From 91d75d8064bbaa6d7a94a67d550a44025880011b Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Mon, 13 Jul 2026 11:15:23 +0900
+Subject: [PATCH 12/17] Add date conversion with configurable formats
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Introduce DateRewriter to karukan-engine that transforms relative-day
+readings (きょう, あした, etc.) into calendar dates with user-configurable
+strftime formats. The rewriter uses an injectable Clock abstraction for
+date sourcing, enabling deterministic testing while using the system
+clock at runtime.
+
+Integrate the feature into karukan-im's engine via EngineConfig and
+expose configuration in the user's config.toml:
+- date.enabled: toggles the feature on/off (default: true)
+- date.formats: list of strftime formats for output (default: ISO and
+  Japanese formats)
+
+Add comprehensive tests for the rewriter and integration tests
+exercising the full conversion path through the engine. Document the
+feature in karukan-im's README with supported readings and configuration
+details.
+---
+ Cargo.lock                                    |   1 +
+ docs/configuration.md                         |   4 +
+ karukan-engine/Cargo.toml                     |   3 +
+ karukan-engine/src/lib.rs                     |   5 +-
+ karukan-engine/src/rewriter/date.rs           | 210 ++++++++++++++++++
+ karukan-engine/src/rewriter/mod.rs            |   2 +
+ karukan-im/core/config/default.toml           |   9 +
+ karukan-im/core/src/config/settings.rs        |  44 +++-
+ karukan-im/core/src/core/engine/mod.rs        |  22 +-
+ .../core/src/core/engine/tests/rewriter.rs    |  85 +++++++
+ karukan-im/core/src/core/engine/types.rs      |  13 ++
+ 11 files changed, 390 insertions(+), 8 deletions(-)
+ create mode 100644 karukan-engine/src/rewriter/date.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index ddda189..d012c7f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1707,6 +1707,7 @@ name = "karukan-engine"
+ version = "0.1.0"
+ dependencies = [
+  "anyhow",
++ "chrono",
+  "criterion",
+  "hf-hub",
+  "llama-cpp-2",
+diff --git a/docs/configuration.md b/docs/configuration.md
+index b7fc21c..7a3d8c7 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -41,6 +41,10 @@ digit = "half"                 # 0-9
+ ctrl_space_fullwidth = true    # Ctrl+Space で全角スペースを入力（既定ON。OFFにするとOSへ素通し）
+ shift_space_halfwidth = false  # Shift+Space で半角スペースを入力（既定OFF）
+ bare_space_halfwidth = true    # 何も入力していないときの Space を半角にする（既定ON）
++
++[date]
++enabled = true                          # 日付変換の有効/無効（既定ON）
++formats = ["%Y-%m-%d", "%Y年%-m月%-d日"] # 出力フォーマット（chrono strftime）。複数指定で各々が候補になる
+ ```
+ 
+ `model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回利用時にHugging Faceから自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
+diff --git a/karukan-engine/Cargo.toml b/karukan-engine/Cargo.toml
+index ee0c01c..272fb3a 100644
+--- a/karukan-engine/Cargo.toml
++++ b/karukan-engine/Cargo.toml
+@@ -34,6 +34,9 @@ hf-hub = { version = "1.0", features = ["blocking"] }
+ # Unicode normalization (NFKC) for models whose tokenizer doesn't support full-width ASCII
+ unicode-normalization = "0.1"
+ 
++# Date/time for the date-conversion rewriter (きょう -> today's date)
++chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
++
+ # HuggingFace tokenizers for external BPE tokenization (bypasses llama.cpp's built-in tokenizer)
+ tokenizers = "0.23"
+ 
+diff --git a/karukan-engine/src/lib.rs b/karukan-engine/src/lib.rs
+index 8108701..4225a9b 100644
+--- a/karukan-engine/src/lib.rs
++++ b/karukan-engine/src/lib.rs
+@@ -14,8 +14,9 @@ pub use kana::{
+ pub use kanji::{Backend, KanaKanjiConverter};
+ pub use learning::{LearningCache, LearningConfig};
+ pub use rewriter::{
+-    AlphabetRewriter, EmojiRewriter, HalfWidthKatakanaRewriter, RewriteOutput, Rewriter,
+-    RewriterChain, SymbolRewriter, description as symbol_description,
++    AlphabetRewriter, Clock, DEFAULT_DATE_FORMATS, DateRewriter, EmojiRewriter,
++    HalfWidthKatakanaRewriter, RewriteOutput, Rewriter, RewriterChain, SymbolRewriter, SystemClock,
++    description as symbol_description,
+ };
+ pub use romaji::{
+     BracketStyle, Converted, PunctuationStyle, RomajiConverter, SlashStyle, SymbolStyle,
+diff --git a/karukan-engine/src/rewriter/date.rs b/karukan-engine/src/rewriter/date.rs
+new file mode 100644
+index 0000000..53ac056
+--- /dev/null
++++ b/karukan-engine/src/rewriter/date.rs
+@@ -0,0 +1,210 @@
++//! Date rewriter — turns relative-day readings into calendar dates.
++//!
++//! When the user types a reading such as `きょう` / `あした` / `きのう`, this
++//! rewriter emits the corresponding calendar date rendered with one or more
++//! configurable `strftime`-style formats (e.g. `2026-07-13`). Each variant is
++//! annotated with the day label (`今日`, `明日`, …) so the candidate window can
++//! show what the date refers to.
++//!
++//! Unlike the other rewriters, `DateRewriter` ignores the *content* of the
++//! incoming candidate beyond matching it against a fixed set of readings, and
++//! derives its output from the current date instead. The current date is read
++//! from an injectable [`Clock`] on every `rewrite()` call — the macOS
++//! `karukan-imserver` is a long-lived daemon, so capturing the date once at
++//! construction would go stale. Tests inject a fixed clock for determinism.
++
++use std::sync::Arc;
++
++use chrono::format::{Item, StrftimeItems};
++use chrono::{Duration, Local, NaiveDate};
++
++use super::{RewriteOutput, Rewriter};
++
++/// Default date formats emitted when the user does not configure their own:
++/// an ISO-style `2026-07-13` and a Japanese `2026年7月13日`.
++pub const DEFAULT_DATE_FORMATS: &[&str] = &["%Y-%m-%d", "%Y年%-m月%-d日"];
++
++/// Readings recognized by the date rewriter, paired with the day offset from
++/// today and the label shown as the candidate annotation.
++const READINGS: &[(&str, i64, &str)] = &[
++    ("きょう", 0, "今日"),
++    ("きのう", -1, "昨日"),
++    ("おととい", -2, "一昨日"),
++    ("あした", 1, "明日"),
++    ("あす", 1, "明日"),
++    ("あさって", 2, "明後日"),
++];
++
++/// Source of the current local date. Injectable so tests are deterministic.
++pub trait Clock: Send + Sync {
++    /// Today's date in the local timezone.
++    fn today(&self) -> NaiveDate;
++}
++
++/// Reads the current date from the system's local clock.
++pub struct SystemClock;
++
++impl Clock for SystemClock {
++    fn today(&self) -> NaiveDate {
++        Local::now().date_naive()
++    }
++}
++
++/// Rewriter that maps relative-day readings to formatted calendar dates.
++pub struct DateRewriter {
++    clock: Arc<dyn Clock>,
++    formats: Vec<String>,
++}
++
++impl DateRewriter {
++    /// Build a rewriter using the system clock and the given `strftime` formats.
++    pub fn new(formats: Vec<String>) -> Self {
++        Self {
++            clock: Arc::new(SystemClock),
++            formats,
++        }
++    }
++
++    /// Build a rewriter with an explicit clock (used by tests for determinism).
++    pub fn with_clock(clock: Arc<dyn Clock>, formats: Vec<String>) -> Self {
++        Self { clock, formats }
++    }
++}
++
++/// Look up the day offset and label for a reading, if it is a date reading.
++fn match_reading(reading: &str) -> Option<(i64, &'static str)> {
++    READINGS
++        .iter()
++        .find(|(r, _, _)| *r == reading)
++        .map(|(_, offset, label)| (*offset, *label))
++}
++
++/// Render `date` with a `strftime` format, returning `None` for an invalid
++/// format string instead of panicking (formats come from user config).
++fn format_date(date: NaiveDate, fmt: &str) -> Option<String> {
++    let items: Vec<Item> = StrftimeItems::new(fmt).collect();
++    if items.iter().any(|it| matches!(it, Item::Error)) {
++        return None;
++    }
++    // Format via midnight so any valid specifier (incl. time fields) resolves
++    // rather than failing to render.
++    let dt = date.and_hms_opt(0, 0, 0)?;
++    Some(dt.format_with_items(items.iter()).to_string())
++}
++
++impl Rewriter for DateRewriter {
++    fn name(&self) -> &'static str {
++        "date"
++    }
++
++    fn rewrite(&self, candidate: &str) -> Vec<RewriteOutput> {
++        let Some((offset, label)) = match_reading(candidate) else {
++            return Vec::new();
++        };
++        let Some(date) = self
++            .clock
++            .today()
++            .checked_add_signed(Duration::days(offset))
++        else {
++            return Vec::new();
++        };
++        self.formats
++            .iter()
++            .filter_map(|fmt| format_date(date, fmt))
++            .map(|text| (text, Some(label.to_string())))
++            .collect()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::rewriter::test_util::{desc, texts};
++
++    struct FixedClock(NaiveDate);
++    impl Clock for FixedClock {
++        fn today(&self) -> NaiveDate {
++            self.0
++        }
++    }
++
++    fn rewriter_on(date: (i32, u32, u32), formats: &[&str]) -> DateRewriter {
++        let clock = Arc::new(FixedClock(
++            NaiveDate::from_ymd_opt(date.0, date.1, date.2).unwrap(),
++        ));
++        DateRewriter::with_clock(clock, formats.iter().map(|s| s.to_string()).collect())
++    }
++
++    #[test]
++    fn non_date_reading_returns_empty() {
++        let r = rewriter_on((2026, 7, 13), &["%Y-%m-%d"]);
++        assert!(r.rewrite("あいう").is_empty());
++        assert!(r.rewrite("").is_empty());
++    }
++
++    #[test]
++    fn kyou_is_today() {
++        let r = rewriter_on((2026, 7, 13), &["%Y-%m-%d"]);
++        assert_eq!(texts(&r.rewrite("きょう")), vec!["2026-07-13".to_string()]);
++    }
++
++    #[test]
++    fn kinou_is_yesterday_ashita_is_tomorrow() {
++        let r = rewriter_on((2026, 7, 13), &["%Y-%m-%d"]);
++        assert_eq!(texts(&r.rewrite("きのう")), vec!["2026-07-12".to_string()]);
++        assert_eq!(texts(&r.rewrite("あした")), vec!["2026-07-14".to_string()]);
++        // `あす` is an alias for tomorrow.
++        assert_eq!(texts(&r.rewrite("あす")), vec!["2026-07-14".to_string()]);
++    }
++
++    #[test]
++    fn ototoi_and_asatte_are_two_day_offsets() {
++        let r = rewriter_on((2026, 7, 13), &["%Y-%m-%d"]);
++        assert_eq!(
++            texts(&r.rewrite("おととい")),
++            vec!["2026-07-11".to_string()]
++        );
++        assert_eq!(
++            texts(&r.rewrite("あさって")),
++            vec!["2026-07-15".to_string()]
++        );
++    }
++
++    #[test]
++    fn offsets_cross_month_boundaries() {
++        let r = rewriter_on((2026, 7, 1), &["%Y-%m-%d"]);
++        assert_eq!(texts(&r.rewrite("きのう")), vec!["2026-06-30".to_string()]);
++    }
++
++    #[test]
++    fn multiple_formats_each_emit_a_variant() {
++        let r = rewriter_on((2026, 7, 13), &["%Y-%m-%d", "%Y年%-m月%-d日"]);
++        assert_eq!(
++            texts(&r.rewrite("きょう")),
++            vec!["2026-07-13".to_string(), "2026年7月13日".to_string()]
++        );
++    }
++
++    #[test]
++    fn label_is_attached_as_description() {
++        let r = rewriter_on((2026, 7, 13), &["%Y-%m-%d"]);
++        let out = r.rewrite("きょう");
++        assert_eq!(desc(&out, "2026-07-13"), Some("今日".to_string()));
++        let out = r.rewrite("あした");
++        assert_eq!(desc(&out, "2026-07-14"), Some("明日".to_string()));
++    }
++
++    #[test]
++    fn empty_formats_emit_nothing() {
++        let r = rewriter_on((2026, 7, 13), &[]);
++        assert!(r.rewrite("きょう").is_empty());
++    }
++
++    #[test]
++    fn invalid_format_is_skipped_not_panicked() {
++        // `%Q` is not a valid strftime specifier; it must be dropped rather
++        // than crash the engine, and valid formats still come through.
++        let r = rewriter_on((2026, 7, 13), &["%Q", "%Y-%m-%d"]);
++        assert_eq!(texts(&r.rewrite("きょう")), vec!["2026-07-13".to_string()]);
++    }
++}
+diff --git a/karukan-engine/src/rewriter/mod.rs b/karukan-engine/src/rewriter/mod.rs
+index de5ab97..6cd2a67 100644
+--- a/karukan-engine/src/rewriter/mod.rs
++++ b/karukan-engine/src/rewriter/mod.rs
+@@ -19,12 +19,14 @@
+ //! for deduplication and ordering.
+ 
+ mod alphabet;
++mod date;
+ mod emoji;
+ mod half_katakana;
+ mod number;
+ mod symbol;
+ 
+ pub use alphabet::AlphabetRewriter;
++pub use date::{Clock, DEFAULT_DATE_FORMATS, DateRewriter, SystemClock};
+ pub use emoji::EmojiRewriter;
+ pub use half_katakana::HalfWidthKatakanaRewriter;
+ pub use number::NumberRewriter;
+diff --git a/karukan-im/core/config/default.toml b/karukan-im/core/config/default.toml
+index 5da65c9..af10e96 100644
+--- a/karukan-im/core/config/default.toml
++++ b/karukan-im/core/config/default.toml
+@@ -95,6 +95,15 @@ digit = "half"
+ # か辞書の表記のどちらかで、どちらも勝手に幅を変えるものではないため。
+ # 全角の英字は候補一覧の ＡＢＣ（[全]英大文字）から選べます。
+ 
++[date]
++# 「きょう」「あした」などの読みを変換候補で日付に変換する。
++# 対象の読み: きょう(今日) / きのう(昨日) / おととい(一昨日) /
++# あした・あす(明日) / あさって(明後日)
++enabled = true
++# 出力する日付フォーマット（chrono の strftime 記法）。複数指定すると
++# それぞれが個別の候補になる。例: "%Y-%m-%d" -> 2026-07-13
++formats = ["%Y-%m-%d", "%Y年%-m月%-d日"]
++
+ [keys]
+ # Ctrl+Space を全角スペース入力に使う。
+ # false にすると Karukan は Ctrl+Space を横取りせず OS に渡す
+diff --git a/karukan-im/core/src/config/settings.rs b/karukan-im/core/src/config/settings.rs
+index c68c567..94012c3 100644
+--- a/karukan-im/core/src/config/settings.rs
++++ b/karukan-im/core/src/config/settings.rs
+@@ -181,6 +181,17 @@ pub struct KeysSettings {
+     pub bare_space_halfwidth: bool,
+ }
+ 
++/// Date-conversion settings
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct DateSettings {
++    /// Convert relative-day readings (きょう / あした / …) into calendar dates
++    /// as extra conversion candidates.
++    pub enabled: bool,
++    /// Date formats emitted as candidates, in `chrono` strftime notation. Each
++    /// entry produces one candidate (e.g. `%Y-%m-%d` → `2026-07-13`).
++    pub formats: Vec<String>,
++}
++
+ impl Default for Settings {
+     fn default() -> Self {
+         toml::from_str(DEFAULT_CONFIG_TOML).expect("embedded default.toml must be valid")
+@@ -441,9 +452,38 @@ use_context = false
+     }
+ 
+     #[test]
+-    fn test_keys_default_shift_space_halfwidth_is_off() {
++    fn test_date_default_enabled_with_iso_and_japanese_formats() {
++        let settings = Settings::default();
++        assert!(settings.date.enabled);
++        assert_eq!(settings.date.formats, vec!["%Y-%m-%d", "%Y年%-m月%-d日"]);
++    }
++
++    #[test]
++    fn test_date_override_formats_and_enabled() {
++        let mut file = NamedTempFile::new().unwrap();
++        writeln!(
++            file,
++            r#"
++[date]
++enabled = false
++formats = ["%Y/%m/%d"]
++"#
++        )
++        .unwrap();
++
++        let path = file.path().to_path_buf();
++        let settings = Settings::load_from(&path).unwrap();
++        assert!(!settings.date.enabled);
++        assert_eq!(settings.date.formats, vec!["%Y/%m/%d"]);
++        // Sections the user did not specify still fall back to defaults.
++        assert_eq!(settings.conversion.num_candidates, 9);
++    }
++
++    #[test]
++    fn test_keys_default_shift_space_halfwidth_is_on() {
++        // This branch's bundled default enables Shift+Space half-width input.
+         let settings = Settings::default();
+-        assert!(!settings.keys.shift_space_halfwidth);
++        assert!(settings.keys.shift_space_halfwidth);
+     }
+ 
+     #[test]
+diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
+index ceb7f3b..d6ef78b 100644
+--- a/karukan-im/core/src/core/engine/mod.rs
++++ b/karukan-im/core/src/core/engine/mod.rs
+@@ -28,8 +28,8 @@ use input_buffer::InputBuffer;
+ mod tests;
+ 
+ use karukan_engine::{
+-    Dictionary, EmojiRewriter, KanaKanjiConverter, LearningCache, LearningConfig, RewriteOutput,
+-    Rewriter, RewriterChain, RomajiConverter,
++    DateRewriter, Dictionary, KanaKanjiConverter, LearningCache, LearningConfig, RewriterChain,
++    RomajiConverter, EmojiRewriter, RewriteOutput, Rewriter,
+ };
+ use tracing::{debug, trace};
+ 
+@@ -177,16 +177,17 @@ pub struct InputMethodEngine {
+ impl InputMethodEngine {
+     /// Create a new IME engine
+     pub fn new() -> Self {
++        let config = EngineConfig::default();
+         Self {
+             state: InputState::Empty,
+             converters: Converters {
+                 romaji: RomajiConverter::new(),
+                 kanji: None,
+                 light_kanji: None,
+-                rewriters: RewriterChain::default_chain(),
++                rewriters: Self::build_rewriters(&config),
+             },
+             surrounding_context: None,
+-            config: EngineConfig::default(),
++            config,
+             metrics: ConversionMetrics::default(),
+             mode: ModeState::default(),
+             input_buf: InputBuffer::new(),
+@@ -203,6 +204,7 @@ impl InputMethodEngine {
+ 
+     /// Create with configuration
+     pub fn with_config(config: EngineConfig) -> Self {
++        let rewriters = Self::build_rewriters(&config);
+         let mut engine = Self {
+             live: LiveConversion::new(config.live_conversion),
+             ..Self::new()
+@@ -212,10 +214,22 @@ impl InputMethodEngine {
+         // width rules too: a keystroke settles at the width in force when
+         // it was typed.
+         engine.converters.romaji = RomajiConverter::with_rules(config.symbol, config.width);
++        engine.converters.rewriters = rewriters;
+         engine.config = config;
+         engine
+     }
+ 
++    /// Build the rewriter chain for a configuration: the default chain plus the
++    /// date rewriter when date conversion is enabled and at least one format is
++    /// configured.
++    fn build_rewriters(config: &EngineConfig) -> RewriterChain {
++        let mut chain = RewriterChain::default_chain();
++        if config.date_conversion && !config.date_formats.is_empty() {
++            chain.add(Box::new(DateRewriter::new(config.date_formats.clone())));
++        }
++        chain
++    }
++
+     /// Conversion (inference) time of the last `process_key` /
+     /// `select_candidate_on_page` call in milliseconds; 0 when that call
+     /// ran no conversion.
+diff --git a/karukan-im/core/src/core/engine/tests/rewriter.rs b/karukan-im/core/src/core/engine/tests/rewriter.rs
+index f0a85c5..efde713 100644
+--- a/karukan-im/core/src/core/engine/tests/rewriter.rs
++++ b/karukan-im/core/src/core/engine/tests/rewriter.rs
+@@ -167,6 +167,91 @@ fn rewriter_candidates_only_derive_from_user_input() {
+     }
+ }
+ 
++// ---------- date conversion ----------
++
++/// True if `text` has the ISO `YYYY-MM-DD` shape (used to detect a date
++/// candidate without depending on the actual current date).
++fn looks_like_iso_date(text: &str) -> bool {
++    let bytes = text.as_bytes();
++    text.len() == 10
++        && text.chars().enumerate().all(|(i, c)| {
++            if i == 4 || i == 7 {
++                c == '-'
++            } else {
++                c.is_ascii_digit()
++            }
++        })
++        && bytes[4] == b'-'
++        && bytes[7] == b'-'
++}
++
++/// Composing engine built from an explicit config (kanji model disabled).
++fn composing_engine_with_config(reading: &str, config: EngineConfig) -> InputMethodEngine {
++    let mut engine = InputMethodEngine::with_config(config);
++    engine.input_buf.insert(reading);
++    engine.state = InputState::Composing {
++        preedit: Preedit::new(),
++    };
++    engine.converters.kanji = None;
++    engine
++}
++
++#[test]
++fn date_conversion_enabled_emits_date_candidate_for_kyou() {
++    // The default engine enables date conversion with the ISO format, so
++    // typing `きょう` yields a `YYYY-MM-DD` candidate from the Rewriter source.
++    let mut engine = composing_engine("きょう");
++    let candidates = engine.build_conversion_candidates("きょう", "きょう", "", 9, false);
++    let has_date = candidates
++        .iter()
++        .any(|c| c.source == CandidateSource::Rewriter && looks_like_iso_date(&c.text));
++    assert!(
++        has_date,
++        "expected an ISO date candidate for きょう, got {:?}",
++        candidates.iter().map(|c| &c.text).collect::<Vec<_>>()
++    );
++}
++
++#[test]
++fn date_conversion_disabled_emits_no_date_candidate() {
++    let config = EngineConfig {
++        date_conversion: false,
++        ..EngineConfig::default()
++    };
++    let mut engine = composing_engine_with_config("きょう", config);
++    let candidates = engine.build_conversion_candidates("きょう", "きょう", "", 9, false);
++    assert!(
++        !candidates.iter().any(|c| looks_like_iso_date(&c.text)),
++        "date candidate present despite date_conversion = false"
++    );
++}
++
++#[test]
++fn non_date_reading_emits_no_date_candidate() {
++    // A reading that is not a date word must not gain a date candidate.
++    let mut engine = composing_engine("てすと");
++    let candidates = engine.build_conversion_candidates("てすと", "てすと", "", 9, false);
++    assert!(!candidates.iter().any(|c| looks_like_iso_date(&c.text)));
++}
++
++#[test]
++fn date_candidate_reachable_through_space_conversion() {
++    // Drive the real key path — type きょう then press Space to convert — and
++    // confirm the date candidate lands in the conversion candidate list. No
++    // model is loaded, so this exercises the rewriter path end-to-end through
++    // `process_key` / `start_conversion` / `CandidateList`, not just the
++    // internal builder.
++    let mut engine = InputMethodEngine::new();
++    type_string(&mut engine, "kyou");
++    let result = engine.process_key(&press_key(Keysym::SPACE));
++    assert!(result.consumed);
++    let texts = conversion_state_texts(&engine);
++    assert!(
++        texts.iter().any(|t| looks_like_iso_date(t)),
++        "expected a date candidate in the conversion list, got {texts:?}"
++    );
++}
++
+ // ---------- alphabet width / case variants ----------
+ 
+ #[test]
+diff --git a/karukan-im/core/src/core/engine/types.rs b/karukan-im/core/src/core/engine/types.rs
+index cb82162..17fcfe1 100644
+--- a/karukan-im/core/src/core/engine/types.rs
++++ b/karukan-im/core/src/core/engine/types.rs
+@@ -116,6 +116,12 @@ pub struct EngineConfig {
+     /// Whether the bare Space inputs a half-width ASCII space in Empty Hiragana
+     /// mode. When false (default), bare Space commits a full-width `　`.
+     pub bare_space_halfwidth: bool,
++    /// Whether relative-day readings (きょう / あした / …) are converted into
++    /// calendar dates as extra candidates.
++    pub date_conversion: bool,
++    /// Date formats (chrono strftime) emitted by the date rewriter. Each entry
++    /// produces one candidate. Ignored when `date_conversion` is false.
++    pub date_formats: Vec<String>,
+ }
+ 
+ impl EngineConfig {
+@@ -146,6 +152,8 @@ impl EngineConfig {
+             ctrl_space_fullwidth: settings.keys.ctrl_space_fullwidth,
+             shift_space_halfwidth: settings.keys.shift_space_halfwidth,
+             bare_space_halfwidth: settings.keys.bare_space_halfwidth,
++            date_conversion: settings.date.enabled,
++            date_formats: settings.date.formats.clone(),
+         }
+     }
+ }
+@@ -172,6 +180,11 @@ impl Default for EngineConfig {
+             ctrl_space_fullwidth: true,
+             shift_space_halfwidth: false,
+             bare_space_halfwidth: false,
++            date_conversion: true,
++            date_formats: karukan_engine::DEFAULT_DATE_FORMATS
++                .iter()
++                .map(|s| s.to_string())
++                .collect(),
+         }
+     }
+ }
+-- 
+2.55.0
+

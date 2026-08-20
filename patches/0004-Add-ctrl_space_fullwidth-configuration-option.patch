@@ -1,0 +1,73 @@
+From 9fee2c01fb140a6332ba7337d0c6d75a67544fce Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Wed, 1 Jul 2026 15:22:27 +0900
+Subject: [PATCH 04/17] Add ctrl_space_fullwidth configuration option
+
+Add a new ctrl_space_fullwidth configuration to EngineConfig that
+controls whether Ctrl+Space inputs a full-width space (U+3000). When
+false, Ctrl+Space passes through to the OS without being consumed by
+the engine.
+
+The setting defaults to true and can be customized via the Settings
+structure. Include tests to verify the default value and that the
+setting correctly maps from user configuration.
+---
+ karukan-im/core/src/core/engine/tests/basic.rs | 14 ++++++++++++++
+ karukan-im/core/src/core/engine/types.rs       |  5 +++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/karukan-im/core/src/core/engine/tests/basic.rs b/karukan-im/core/src/core/engine/tests/basic.rs
+index 9fb6037..cb1a62e 100644
+--- a/karukan-im/core/src/core/engine/tests/basic.rs
++++ b/karukan-im/core/src/core/engine/tests/basic.rs
+@@ -191,3 +191,17 @@ fn test_truncate_context() {
+     let jp = engine.truncate_context("今日はとても良い天気");
+     assert_eq!(jp.chars().count(), 5); // Last 5 chars
+ }
++
++#[test]
++fn ctrl_space_fullwidth_defaults_true_in_engine_config() {
++    let config = EngineConfig::default();
++    assert!(config.ctrl_space_fullwidth);
++}
++
++#[test]
++fn ctrl_space_fullwidth_maps_from_settings() {
++    let mut settings = crate::config::Settings::default();
++    assert!(EngineConfig::from_settings(&settings).ctrl_space_fullwidth);
++    settings.keys.ctrl_space_fullwidth = false;
++    assert!(!EngineConfig::from_settings(&settings).ctrl_space_fullwidth);
++}
+diff --git a/karukan-im/core/src/core/engine/types.rs b/karukan-im/core/src/core/engine/types.rs
+index be66667..a90e5d2 100644
+--- a/karukan-im/core/src/core/engine/types.rs
++++ b/karukan-im/core/src/core/engine/types.rs
+@@ -107,6 +107,9 @@ pub struct EngineConfig {
+     pub width: WidthRules,
+     /// The space the Space key inputs
+     pub space: SpaceStyle,
++    /// Whether Ctrl+Space inputs a full-width space (U+3000).
++    /// When false, Ctrl+Space is not consumed and passes through to the OS.
++    pub ctrl_space_fullwidth: bool,
+ }
+ 
+ impl EngineConfig {
+@@ -134,6 +137,7 @@ impl EngineConfig {
+             symbol: settings.symbol.style(),
+             width: settings.width,
+             space: settings.symbol.space,
++            ctrl_space_fullwidth: settings.keys.ctrl_space_fullwidth,
+         }
+     }
+ }
+@@ -157,6 +161,7 @@ impl Default for EngineConfig {
+             symbol: SymbolStyle::default(),
+             width: WidthRules::default(),
+             space: SpaceStyle::default(),
++            ctrl_space_fullwidth: true,
+         }
+     }
+ }
+-- 
+2.55.0
+

@@ -1,0 +1,211 @@
+From 7c4fca95e3fabf8f30e54544a8f6733ee20a59c7 Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Mon, 13 Jul 2026 14:06:03 +0900
+Subject: [PATCH 13/17] Promote date candidates to first page
+
+Move date conversion out of the rewriter chain and into an explicit
+candidate insertion step. Introduce CandidateSource::Date to distinguish
+date candidates from generic rewriter output, then insert them right
+after the top model candidate in build_conversion_candidates so they
+land on the first page instead of the rewriter tail.
+
+Remove DateRewriter from the default rewriter chain and the
+config-conditional build_rewriters method, simplifying initialization
+to always use RewriterChain::default_chain(). The engine now handles
+date candidate insertion at insertion time, giving explicit control over
+their placement and visibility.
+---
+ karukan-im/core/src/core/candidate.rs         |  4 ++
+ karukan-im/core/src/core/engine/conversion.rs | 39 +++++++++++++++++-
+ karukan-im/core/src/core/engine/mod.rs        | 10 ++---
+ .../core/src/core/engine/tests/rewriter.rs    | 41 ++++++++++++++++---
+ 4 files changed, 82 insertions(+), 12 deletions(-)
+
+diff --git a/karukan-im/core/src/core/candidate.rs b/karukan-im/core/src/core/candidate.rs
+index 2cbc4d7..863c4e7 100644
+--- a/karukan-im/core/src/core/candidate.rs
++++ b/karukan-im/core/src/core/candidate.rs
+@@ -13,6 +13,9 @@ pub enum CandidateSource {
+     Learning,
+     /// Model inference result
+     Model,
++    /// Date conversion (きょう / あした / … → calendar date). Promoted to just
++    /// after the top model candidate so it surfaces on the first page.
++    Date,
+     /// System dictionary lookup (also covers reading→symbol lookups via
+     /// mozc's symbol.tsv — they're treated as just another dictionary).
+     Dictionary,
+@@ -30,6 +33,7 @@ impl CandidateSource {
+             CandidateSource::UserDictionary => "\u{1F464} \u{30E6}\u{30FC}\u{30B6}\u{30FC}", // 👤 ユーザー
+             CandidateSource::Learning => "\u{1F4DD} \u{5B66}\u{7FD2}", // 📝 学習
+             CandidateSource::Model => "\u{1F916} AI",                  // 🤖 AI
++            CandidateSource::Date => "\u{1F4C5} \u{65E5}\u{4ED8}",     // 📅 日付
+             CandidateSource::Dictionary => "\u{1F4DA} \u{8F9E}\u{66F8}", // 📚 辞書
+             CandidateSource::Rewriter => "\u{1F504} \u{5909}\u{63DB}", // 🔄 変換
+             CandidateSource::Fallback => "",
+diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
+index 6d445ad..a089fd4 100644
+--- a/karukan-im/core/src/core/engine/conversion.rs
++++ b/karukan-im/core/src/core/engine/conversion.rs
+@@ -4,11 +4,23 @@
+ 
+ use std::collections::HashSet;
+ 
++use karukan_engine::Rewriter;
+ use tracing::debug;
+ 
+ use super::filter::source_for_key;
+ use super::*;
+ 
++/// Index at which date candidates are inserted: right after the first model
++/// candidate so they land on the first page rather than in the rewriter tail.
++/// Falls back to just after the top candidate when no model candidate exists.
++pub(super) fn date_insert_index(candidates: &[AnnotatedCandidate]) -> usize {
++    candidates
++        .iter()
++        .position(|c| c.source == CandidateSource::Model)
++        .map(|i| i + 1)
++        .unwrap_or_else(|| candidates.len().min(1))
++}
++
+ /// Maximum number of learning candidates to show
+ const MAX_LEARNING_CANDIDATES: usize = 3;
+ 
+@@ -393,7 +405,32 @@ impl InputMethodEngine {
+                 .map(str::to_string);
+         }
+ 
+-        builder.into_candidates()
++        let mut candidates = builder.into_candidates();
++        self.insert_date_candidates(reading, &mut candidates);
++        candidates
++    }
++
++    /// Insert date-conversion candidates (きょう / あした / … → calendar date)
++    /// right after the top model candidate so they surface on the first page
++    /// instead of the rewriter tail. No-op when date conversion is disabled,
++    /// no format is configured, or the reading is not a date reading.
++    fn insert_date_candidates(&self, reading: &str, candidates: &mut Vec<AnnotatedCandidate>) {
++        if !self.config.date_conversion || self.config.date_formats.is_empty() {
++            return;
++        }
++        let rewriter = karukan_engine::DateRewriter::new(self.config.date_formats.clone());
++        let dates: Vec<AnnotatedCandidate> = rewriter
++            .rewrite(reading)
++            .into_iter()
++            .filter(|(text, _)| !candidates.iter().any(|c| &c.text == text))
++            .map(|(text, description)| {
++                AnnotatedCandidate::new(text, CandidateSource::Date).with_description(description)
++            })
++            .collect();
++        let at = date_insert_index(candidates);
++        for (offset, cand) in dates.into_iter().enumerate() {
++            candidates.insert(at + offset, cand);
++        }
+     }
+ 
+     /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
+diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
+index d6ef78b..93af09a 100644
+--- a/karukan-im/core/src/core/engine/mod.rs
++++ b/karukan-im/core/src/core/engine/mod.rs
+@@ -28,8 +28,8 @@ use input_buffer::InputBuffer;
+ mod tests;
+ 
+ use karukan_engine::{
+-    DateRewriter, Dictionary, KanaKanjiConverter, LearningCache, LearningConfig, RewriterChain,
+-    RomajiConverter, EmojiRewriter, RewriteOutput, Rewriter,
++    DateRewriter, Dictionary, EmojiRewriter, KanaKanjiConverter, LearningCache, LearningConfig,
++    RewriteOutput, Rewriter, RewriterChain, RomajiConverter,
+ };
+ use tracing::{debug, trace};
+ 
+@@ -177,17 +177,16 @@ pub struct InputMethodEngine {
+ impl InputMethodEngine {
+     /// Create a new IME engine
+     pub fn new() -> Self {
+-        let config = EngineConfig::default();
+         Self {
+             state: InputState::Empty,
+             converters: Converters {
+                 romaji: RomajiConverter::new(),
+                 kanji: None,
+                 light_kanji: None,
+-                rewriters: Self::build_rewriters(&config),
++                rewriters: RewriterChain::default_chain(),
+             },
+             surrounding_context: None,
+-            config,
++            config: EngineConfig::default(),
+             metrics: ConversionMetrics::default(),
+             mode: ModeState::default(),
+             input_buf: InputBuffer::new(),
+@@ -227,7 +226,6 @@ impl InputMethodEngine {
+         if config.date_conversion && !config.date_formats.is_empty() {
+             chain.add(Box::new(DateRewriter::new(config.date_formats.clone())));
+         }
+-        chain
+     }
+ 
+     /// Conversion (inference) time of the last `process_key` /
+diff --git a/karukan-im/core/src/core/engine/tests/rewriter.rs b/karukan-im/core/src/core/engine/tests/rewriter.rs
+index efde713..eb871b3 100644
+--- a/karukan-im/core/src/core/engine/tests/rewriter.rs
++++ b/karukan-im/core/src/core/engine/tests/rewriter.rs
+@@ -199,17 +199,48 @@ fn composing_engine_with_config(reading: &str, config: EngineConfig) -> InputMet
+ #[test]
+ fn date_conversion_enabled_emits_date_candidate_for_kyou() {
+     // The default engine enables date conversion with the ISO format, so
+-    // typing `きょう` yields a `YYYY-MM-DD` candidate from the Rewriter source.
++    // typing `きょう` yields a `YYYY-MM-DD` candidate tagged with the Date
++    // source, promoted onto the first page rather than the rewriter tail.
+     let mut engine = composing_engine("きょう");
+     let candidates = engine.build_conversion_candidates("きょう", "きょう", "", 9, false);
+-    let has_date = candidates
++    let pos = candidates
+         .iter()
+-        .any(|c| c.source == CandidateSource::Rewriter && looks_like_iso_date(&c.text));
++        .position(|c| c.source == CandidateSource::Date && looks_like_iso_date(&c.text));
+     assert!(
+-        has_date,
+-        "expected an ISO date candidate for きょう, got {:?}",
++        pos.is_some(),
++        "expected a Date candidate for きょう, got {:?}",
+         candidates.iter().map(|c| &c.text).collect::<Vec<_>>()
+     );
++    // Promoted high (no model loaded here → right after the top candidate),
++    // well within the first candidate page.
++    assert!(
++        pos.unwrap() < 9,
++        "date candidate not on the first page: {pos:?}"
++    );
++}
++
++#[test]
++fn date_inserts_after_first_model_candidate() {
++    // With model candidates present, the date lands immediately after the
++    // top model candidate (index of first Model + 1).
++    use crate::core::engine::conversion::date_insert_index;
++    let cands = vec![
++        AnnotatedCandidate::new("学習", CandidateSource::Learning),
++        AnnotatedCandidate::new("今日", CandidateSource::Model),
++        AnnotatedCandidate::new("京", CandidateSource::Model),
++        AnnotatedCandidate::new("きょう", CandidateSource::Fallback),
++    ];
++    assert_eq!(date_insert_index(&cands), 2);
++}
++
++#[test]
++fn date_insert_index_without_model_is_after_top() {
++    use crate::core::engine::conversion::date_insert_index;
++    let cands = vec![
++        AnnotatedCandidate::new("きょう", CandidateSource::Fallback),
++        AnnotatedCandidate::new("キョウ", CandidateSource::Fallback),
++    ];
++    assert_eq!(date_insert_index(&cands), 1);
+ }
+ 
+ #[test]
+-- 
+2.55.0
+

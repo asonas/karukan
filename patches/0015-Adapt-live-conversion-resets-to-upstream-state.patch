@@ -1,0 +1,46 @@
+From 4759534a5de202540a9fac16e8dd912b672e9233 Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Sat, 8 Aug 2026 19:07:20 +0900
+Subject: [PATCH 15/17] Adapt live conversion resets to upstream state
+
+Update downstream mode reset paths to use LiveConversion.shown after upstream removed live.text.
+
+Upstream-Commit: 91d053c
+
+Downstream-Reason: Keep the PR #43-derived downstream patches buildable on current upstream.
+
+Tested-On: macOS arm64; make -C karukan-im/macos test
+---
+ karukan-im/core/src/core/engine/mod.rs  | 2 +-
+ karukan-im/core/src/core/engine/mode.rs | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
+index 93af09a..cc635fd 100644
+--- a/karukan-im/core/src/core/engine/mod.rs
++++ b/karukan-im/core/src/core/engine/mod.rs
+@@ -393,7 +393,7 @@ impl InputMethodEngine {
+     /// learn from the choice.
+     pub(super) fn commit_text(&mut self, text: String) -> EngineResult {
+         self.input_buf.clear();
+-        self.live.text.clear();
++        self.live.shown = false;
+         self.chunks.clear();
+         self.state = InputState::Empty;
+         self.mode.exit_temporary();
+diff --git a/karukan-im/core/src/core/engine/mode.rs b/karukan-im/core/src/core/engine/mode.rs
+index b9112c5..cacd7f3 100644
+--- a/karukan-im/core/src/core/engine/mode.rs
++++ b/karukan-im/core/src/core/engine/mode.rs
+@@ -42,7 +42,7 @@ impl InputMethodEngine {
+             InputMode::Katakana => InputMode::Hiragana,
+             _ => InputMode::Katakana,
+         });
+-        self.live.text.clear();
++        self.live.shown = false;
+         let preedit = self.set_composing_state();
+         let aux = self.format_aux_composing();
+         EngineResult::consumed()
+-- 
+2.55.0
+

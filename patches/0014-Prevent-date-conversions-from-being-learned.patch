@@ -1,0 +1,160 @@
+From b14d72959d7875251c958d422d380479ce4f59ca Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Thu, 16 Jul 2026 09:46:00 +0900
+Subject: [PATCH 14/17] Prevent date conversions from being learned
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Date conversions like `きょう` → `2026-07-16` are now excluded from
+the learning cache. These conversions have time-dependent surfaces that
+would become stale if learned (e.g., a date committed on one day would
+keep surfacing as the top candidate days later with the old date).
+
+The exclusion is surface-specific: only the calendar-date surfaces the
+DateRewriter produces today are blocked. Other conversions of the same
+reading are still learned normally (e.g., `きょう` → `今日` is learned
+as usual).
+
+Two tests verify the behavior: one confirms dates are not learned, and
+another verifies that non-date surfaces for the same reading are still
+learned correctly.
+---
+ karukan-im/core/src/core/engine/conversion.rs | 28 ++++++--
+ .../core/src/core/engine/tests/learning.rs    | 70 +++++++++++++++++++
+ 2 files changed, 94 insertions(+), 4 deletions(-)
+
+diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
+index a089fd4..09116d1 100644
+--- a/karukan-im/core/src/core/engine/conversion.rs
++++ b/karukan-im/core/src/core/engine/conversion.rs
+@@ -708,11 +708,18 @@ impl InputMethodEngine {
+         }
+     }
+ 
+-    /// Record a selection in the learning cache. No-op in emoji mode — the
+-    /// buffer is a `:query`, not a kana reading, and would corrupt the
+-    /// kana-keyed cache.
++    /// Record a conversion selection in the learning cache.
++    ///
++    /// Date conversions (`きょう` → `2026-07-16`) are never learned: their
++    /// surface is tied to the day it was committed, so a learned entry would
++    /// keep resurfacing a stale date (e.g. `2026-07-13` days later) at the top
++    /// of the candidate list. The guard is surface-specific — it only drops the
++    /// calendar-date surfaces the `DateRewriter` would emit today, so a normal
++    /// conversion of the same reading (`きょう` → `今日`) is still learned.
++    /// Emoji queries are also excluded: the buffer is a `:query`, not a kana
++    /// reading, and would corrupt the kana-keyed cache.
+     pub(super) fn record_learning(&mut self, reading: &str, surface: &str) {
+-        if self.mode.current() == InputMode::Emoji {
++        if self.mode.current() == InputMode::Emoji || self.is_date_surface(reading, surface) {
+             return;
+         }
+         if let Some(cache) = &mut self.learning {
+@@ -729,6 +736,19 @@ impl InputMethodEngine {
+         self.end_composition();
+     }
+ 
++    /// Whether `surface` is a calendar date the `DateRewriter` produces for
++    /// `reading` today (across all configured formats). Always false when date
++    /// conversion is disabled or no format is configured.
++    fn is_date_surface(&self, reading: &str, surface: &str) -> bool {
++        if !self.config.date_conversion || self.config.date_formats.is_empty() {
++            return false;
++        }
++        karukan_engine::DateRewriter::new(self.config.date_formats.clone())
++            .rewrite(reading)
++            .iter()
++            .any(|(text, _)| text == surface)
++    }
++
+     /// Commit the current conversion
+     fn commit_conversion(&mut self) -> EngineResult {
+         let Some((text, reading)) = self.selected_conversion_info() else {
+diff --git a/karukan-im/core/src/core/engine/tests/learning.rs b/karukan-im/core/src/core/engine/tests/learning.rs
+index 97adfec..4e97d38 100644
+--- a/karukan-im/core/src/core/engine/tests/learning.rs
++++ b/karukan-im/core/src/core/engine/tests/learning.rs
+@@ -4,9 +4,79 @@
+ //! Tab: skip learning candidates (lets users escape stale learned entries).
+ //! Ctrl+Delete: delete the selected learning candidate from the history.
+ 
++use karukan_engine::{LearningCache, LearningConfig, Rewriter};
++
+ use super::*;
+ use crate::core::engine::display::LEARNING_DELETE_HINT;
+ 
++/// Engine seeded with a learning entry `reading → surface`, no kanji model.
++/// We bypass `init.rs` (which gates learning on settings + file I/O) and just
++/// inject a populated `LearningCache` directly — these tests assert the
++/// build_conversion_candidates branching, not the load path.
++fn engine_with_learned(reading: &str, surface: &str) -> InputMethodEngine {
++    let mut engine = InputMethodEngine::new();
++    engine.converters.kanji = None;
++    let mut cache = LearningCache::new(LearningConfig::default());
++    cache.record(reading, surface);
++    engine.learning = Some(cache);
++    engine
++}
++
++/// Today's date rendered as the ISO variant the `DateRewriter` emits, so the
++/// test agrees with the engine's own notion of "today" regardless of when it
++/// runs.
++fn todays_iso_date() -> String {
++    karukan_engine::DateRewriter::new(vec!["%Y-%m-%d".to_string()])
++        .rewrite("きょう")
++        .remove(0)
++        .0
++}
++
++#[test]
++fn record_learning_skips_todays_date_surface() {
++    // A date-reading committed as a calendar date must not enter the learning
++    // cache: the surface is time-dependent and would go stale (e.g. keep
++    // surfacing `2026-07-13` days later).
++    let mut engine = InputMethodEngine::new();
++    engine.learning = Some(LearningCache::new(LearningConfig::default()));
++
++    let today = todays_iso_date();
++    engine.record_learning("きょう", &today);
++
++    let texts: Vec<String> = engine
++        .lookup_learning_candidates("きょう")
++        .into_iter()
++        .map(|c| c.text)
++        .collect();
++    assert!(
++        !texts.contains(&today),
++        "date surface `{}` must not be learned, got {:?}",
++        today,
++        texts,
++    );
++}
++
++#[test]
++fn record_learning_keeps_kanji_surface_for_date_reading() {
++    // The guard is surface-specific, not reading-specific: `きょう → 今日` is a
++    // legitimate conversion the user wants remembered.
++    let mut engine = InputMethodEngine::new();
++    engine.learning = Some(LearningCache::new(LearningConfig::default()));
++
++    engine.record_learning("きょう", "今日");
++
++    let texts: Vec<String> = engine
++        .lookup_learning_candidates("きょう")
++        .into_iter()
++        .map(|c| c.text)
++        .collect();
++    assert!(
++        texts.contains(&"今日".to_string()),
++        "kanji surface `今日` should still be learned, got {:?}",
++        texts,
++    );
++}
++
+ #[test]
+ fn build_candidates_includes_learning_when_not_skipped() {
+     let mut engine = engine_with_learned("あい", "藍");
+-- 
+2.55.0
+

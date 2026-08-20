@@ -1,0 +1,810 @@
+From e2f55d0ef5a4a11ce52f71b1efb3a3e2ce41daa7 Mon Sep 17 00:00:00 2001
+From: ryo-icy <74962200+ryo-icy@users.noreply.github.com>
+Date: Wed, 1 Jul 2026 14:36:34 +0000
+Subject: [PATCH 08/17] =?UTF-8?q?Add=20F6=E2=80=93F10=20and=20Muhenkan=20k?=
+ =?UTF-8?q?ey=20support=20for=20kana=20commit=20shortcuts?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Implements the standard Japanese IME F-key shortcuts and the Muhenkan key
+in both Composing and Conversion states:
+
+- F6: commit as hiragana
+- F7: commit as full-width katakana
+- F8: commit as half-width katakana
+- F9: commit typed romaji as full-width ASCII (no lossy reverse conversion)
+- F10: commit typed romaji as half-width ASCII
+- Muhenkan (無変換): toggle hiragana/katakana in Composing; commit as
+  full-width katakana in Conversion
+
+F9/F10 reconstruct the original typed romaji via `raw_inputs: Vec<String>`,
+a Vec parallel to `input_buf.text` where `raw_inputs[i]` holds the romaji
+that produced char `i`. This avoids the information loss of hiragana→romaji
+reverse conversion and correctly handles cursor movement, mid-buffer edits,
+Ctrl+Space, and multi-kana digraph groups (e.g. "kya"→"きゃ").
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ karukan-im/core/src/core/engine/conversion.rs |   5 +
+ karukan-im/core/src/core/engine/input.rs      |   8 +-
+ .../core/src/core/engine/input_buffer.rs      | 113 +++++-
+ karukan-im/core/src/core/engine/mod.rs        |  49 +++
+ karukan-im/core/src/core/engine/mode.rs       |  19 +
+ .../core/src/core/engine/tests/basic.rs       |   6 +-
+ karukan-im/core/src/core/engine/tests/fkey.rs | 372 ++++++++++++++++++
+ karukan-im/core/src/core/engine/tests/mod.rs  |   1 +
+ karukan-im/core/src/core/keycode.rs           |  17 +
+ 9 files changed, 570 insertions(+), 20 deletions(-)
+ create mode 100644 karukan-im/core/src/core/engine/tests/fkey.rs
+
+diff --git a/karukan-im/core/src/core/engine/conversion.rs b/karukan-im/core/src/core/engine/conversion.rs
+index 8af6af1..6d445ad 100644
+--- a/karukan-im/core/src/core/engine/conversion.rs
++++ b/karukan-im/core/src/core/engine/conversion.rs
+@@ -552,6 +552,11 @@ impl InputMethodEngine {
+             }
+             // Backspace cancels back to the composition, like Escape.
+             Keysym::BACKSPACE => self.cancel_conversion(),
++            // Muhenkan commits katakana here rather than toggling: with a
++            // candidate list open there is no composition left to re-render.
++            Keysym::F6 | Keysym::F7 | Keysym::F8 | Keysym::F9 | Keysym::F10 | Keysym::MUHENKAN => {
++                self.commit_kana_form(key.keysym)
++            }
+             _ => {
+                 // Ctrl+N / Ctrl+P: emacs-style candidate navigation
+                 if key.modifiers.control_key {
+diff --git a/karukan-im/core/src/core/engine/input.rs b/karukan-im/core/src/core/engine/input.rs
+index 5f3bfc3..7e66e80 100644
+--- a/karukan-im/core/src/core/engine/input.rs
++++ b/karukan-im/core/src/core/engine/input.rs
+@@ -120,7 +120,7 @@ impl InputMethodEngine {
+                 return EngineResult::not_consumed();
+             }
+             self.clear_composition();
+-            self.input_buf.push_direct('\u{3000}');
++            self.input_buf.push_direct_raw('\u{3000}', " ");
+             let preedit = self.set_composing_state();
+             return EngineResult::consumed()
+                 .with_action(EngineAction::UpdatePreedit(preedit))
+@@ -236,7 +236,7 @@ impl InputMethodEngine {
+     /// Insert a full-width space (U+3000), independently of the configured
+     /// ordinary space style.
+     pub(super) fn input_fullwidth_space(&mut self) -> EngineResult {
+-        self.edit_with_chunk_breaks(|e| e.input_buf.push_direct('\u{3000}'));
++        self.edit_with_chunk_breaks(|e| e.input_buf.push_direct_raw('\u{3000}', " "));
+         self.refresh_input_state()
+     }
+ 
+@@ -316,6 +316,10 @@ impl InputMethodEngine {
+             Keysym::RIGHT => self.move_caret_right(),
+             Keysym::HOME => self.move_caret_home(),
+             Keysym::END => self.move_caret_end(),
++            Keysym::F6 | Keysym::F7 | Keysym::F8 | Keysym::F9 | Keysym::F10 => {
++                self.commit_kana_form(key.keysym)
++            }
++            Keysym::MUHENKAN => self.toggle_katakana_composing(),
+             _ => {
+                 if let Some(ch) = key.to_char()
+                     && !key.modifiers.control_key
+diff --git a/karukan-im/core/src/core/engine/input_buffer.rs b/karukan-im/core/src/core/engine/input_buffer.rs
+index f2e4471..4c85e7a 100644
+--- a/karukan-im/core/src/core/engine/input_buffer.rs
++++ b/karukan-im/core/src/core/engine/input_buffer.rs
+@@ -33,19 +33,35 @@
+ use karukan_engine::RomajiConverter;
+ 
+ /// One display character of the composition.
+-#[derive(Clone, Copy)]
++#[derive(Clone)]
+ enum Element {
+     /// A keystroke not yet consumed by a conversion rule
+     Romaji(char),
+     /// A settled character: fired rule output (`ko` → こ), passthrough
+     /// (`1`), or direct input — excluded from romaji evaluation
+-    Converted(char),
++    Converted {
++        ch: char,
++        /// The keystrokes that produced this character, kept so F9/F10 can
++        /// commit what was typed without a lossy kana→romaji reverse
++        /// conversion. A rule's keystrokes are attributed to its first
++        /// output character, so the later characters of a multi-kana rule
++        /// (`kya` → きゃ) carry none and the buffer's keystrokes still
++        /// concatenate in order.
++        raw: String,
++    },
+ }
+ 
+ impl Element {
++    fn converted(ch: char, raw: impl Into<String>) -> Self {
++        Element::Converted {
++            ch,
++            raw: raw.into(),
++        }
++    }
++
+     fn ch(&self) -> char {
+         match self {
+-            Element::Romaji(ch) | Element::Converted(ch) => *ch,
++            Element::Romaji(ch) | Element::Converted { ch, .. } => *ch,
+         }
+     }
+ 
+@@ -99,7 +115,15 @@ impl InputBuffer {
+     /// Record a direct-input keystroke (alphabet/emoji mode) at the caret,
+     /// settled as-is.
+     pub fn push_direct(&mut self, ch: char) {
+-        self.elements.insert(self.cursor, Element::Converted(ch));
++        self.push_direct_raw(ch, ch.to_string());
++    }
++
++    /// Record a settled character whose keystroke differs from what is
++    /// displayed — Ctrl+Space shows `　` but was typed as a space, so F10
++    /// commits the half-width form.
++    pub fn push_direct_raw(&mut self, ch: char, raw: impl Into<String>) {
++        self.elements
++            .insert(self.cursor, Element::converted(ch, raw));
+         self.cursor += 1;
+     }
+ 
+@@ -110,7 +134,8 @@ impl InputBuffer {
+         let count = text.chars().count();
+         self.elements.splice(
+             self.cursor..self.cursor,
+-            text.chars().map(Element::Converted),
++            text.chars()
++                .map(|ch| Element::converted(ch, ch.to_string())),
+         );
+         self.cursor += count;
+     }
+@@ -194,7 +219,7 @@ impl InputBuffer {
+         for element in &self.elements {
+             match element {
+                 Element::Romaji(ch) => run.push(*ch),
+-                Element::Converted(ch) => {
++                Element::Converted { ch, .. } => {
+                     if !run.is_empty() {
+                         reading.push_str(&romaji.convert_flush(&run));
+                         run.clear();
+@@ -238,7 +263,7 @@ impl InputBuffer {
+     /// leaving katakana mode so the preedit doesn't revert.
+     pub fn bake_katakana(&mut self) {
+         for element in &mut self.elements {
+-            if let Element::Converted(ch) = element {
++            if let Element::Converted { ch, .. } = element {
+                 let katakana = karukan_engine::hiragana_to_katakana(&ch.to_string());
+                 *ch = katakana.chars().next().unwrap_or(*ch);
+             }
+@@ -266,6 +291,21 @@ impl InputBuffer {
+         self.elements.len()
+     }
+ 
++    /// The keystrokes that produced the composition, in buffer order —
++    /// what F9/F10 commit. Reconstructed from the record rather than by
++    /// reverse-converting the kana, so cursor movement and mid-buffer
++    /// edits stay faithful (`aiueo`, caret back two, `ka` → `aiukaeo`).
++    pub fn raw_input(&self) -> String {
++        let mut raw = String::new();
++        for element in &self.elements {
++            match element {
++                Element::Romaji(ch) => raw.push(*ch),
++                Element::Converted { raw: keys, .. } => raw.push_str(keys),
++            }
++        }
++        raw
++    }
++
+     /// Element indices of the active run: the maximal Romaji run ending at
+     /// the cursor — the keystrokes currently being typed. Empty when the
+     /// element left of the cursor is settled (a stranded consonant elsewhere
+@@ -313,10 +353,50 @@ fn flush_run(out: &mut Vec<Element>, run: &mut String, romaji: &RomajiConverter)
+     if run.is_empty() {
+         return;
+     }
+-    out.extend(romaji.convert_flush(run).chars().map(Element::Converted));
++    let settled = romaji.convert_flush(run);
++    out.extend(
++        attribute_keys(&settled, run)
++            .into_iter()
++            .map(|(ch, raw)| Element::converted(romaji.width().apply(ch), raw)),
++    );
+     run.clear();
+ }
+ 
++/// Attribute `keys` to the characters of `text`. An ASCII output character
++/// passed through the converter unchanged, so it owns exactly its own
++/// keystroke; a run of rule outputs owns the keystrokes between its ASCII
++/// neighbours, all attributed to the run's first character because a
++/// multi-kana rule (`kya` → きゃ) cannot be split any further. The
++/// attributions therefore concatenate back to `keys`.
++fn attribute_keys(text: &str, keys: &str) -> Vec<(char, String)> {
++    let keys: Vec<char> = keys.chars().collect();
++    let text: Vec<char> = text.chars().collect();
++    let mut out = Vec::with_capacity(text.len());
++    let mut pos = 0;
++    let mut i = 0;
++    while i < text.len() {
++        if text[i].is_ascii() {
++            out.push((text[i], text[i].to_string()));
++            pos += 1;
++            i += 1;
++            continue;
++        }
++        let start = i;
++        while i < text.len() && !text[i].is_ascii() {
++            i += 1;
++        }
++        // Every remaining ASCII output still owes one keystroke, so the
++        // rest of `keys` belongs to this run of rule outputs.
++        let end = keys
++            .len()
++            .saturating_sub(text[i..].iter().filter(|c| c.is_ascii()).count());
++        out.push((text[start], keys[pos.min(end)..end].iter().collect()));
++        out.extend(text[start + 1..i].iter().map(|ch| (*ch, String::new())));
++        pos = end;
++    }
++    out
++}
++
+ /// Evaluate a run of romaji keystrokes: convert the whole run and record
+ /// one element per output character.
+ ///
+@@ -333,14 +413,17 @@ fn flush_run(out: &mut Vec<Element>, run: &mut String, romaji: &RomajiConverter)
+ /// already settled alone.
+ fn evaluate_run(run: &str, romaji: &RomajiConverter) -> Vec<Element> {
+     let converted = romaji.convert(run);
+-    converted
+-        .text
+-        .chars()
+-        .map(|c| {
+-            if romaji.starts_rule(c) {
+-                Element::Romaji(c)
++    let consumed: String = run
++        .strip_suffix(converted.pending.as_str())
++        .unwrap_or(run)
++        .to_string();
++    attribute_keys(&converted.text, &consumed)
++        .into_iter()
++        .map(|(ch, raw)| {
++            if romaji.starts_rule(ch) {
++                Element::Romaji(ch)
+             } else {
+-                Element::Converted(romaji.width().apply(c))
++                Element::converted(romaji.width().apply(ch), raw)
+             }
+         })
+         .chain(converted.pending.chars().map(Element::Romaji))
+diff --git a/karukan-im/core/src/core/engine/mod.rs b/karukan-im/core/src/core/engine/mod.rs
+index 28434e2..ceb7f3b 100644
+--- a/karukan-im/core/src/core/engine/mod.rs
++++ b/karukan-im/core/src/core/engine/mod.rs
+@@ -376,6 +376,55 @@ impl InputMethodEngine {
+         self.edit_with_chunk_breaks(|e| e.input_buf.settle_romaji(&e.converters.romaji));
+     }
+ 
++    /// Commit `text` immediately, resetting all input state. Skips learning —
++    /// the user dictated the form (F6–F10, Muhenkan), so there is nothing to
++    /// learn from the choice.
++    pub(super) fn commit_text(&mut self, text: String) -> EngineResult {
++        self.input_buf.clear();
++        self.live.text.clear();
++        self.chunks.clear();
++        self.state = InputState::Empty;
++        self.mode.exit_temporary();
++        let mut result = EngineResult::consumed()
++            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
++            .with_action(EngineAction::HideCandidates)
++            .with_action(EngineAction::HideAuxText);
++        if !text.is_empty() {
++            result = result.with_action(EngineAction::Commit(text));
++        }
++        result
++    }
++
++    /// The kana forms F6–F8 commit: the composition as it would settle,
++    /// leaving the buffer untouched (`commit_text` clears it right after).
++    fn settled_kana(&self) -> String {
++        self.input_buf.settled_reading(&self.converters.romaji)
++    }
++
++    /// F6–F10 (and Muhenkan in Conversion): commit the composition in a form
++    /// the user dictated outright, bypassing the candidate list.
++    ///
++    /// F9/F10 commit the recorded keystrokes rather than reverse-converting
++    /// the kana, so `windows` typed as kana comes back as `windows`.
++    pub(super) fn commit_kana_form(&mut self, keysym: Keysym) -> EngineResult {
++        let text = match keysym {
++            Keysym::F6 => self.settled_kana(),
++            Keysym::F8 => karukan_engine::kana::katakana_to_half_width(
++                &karukan_engine::hiragana_to_katakana(&self.settled_kana()),
++            ),
++            Keysym::F9 => self
++                .input_buf
++                .raw_input()
++                .chars()
++                .map(karukan_engine::kana::ascii_to_fullwidth_char)
++                .collect(),
++            Keysym::F10 => self.input_buf.raw_input(),
++            // F7 and Muhenkan
++            _ => karukan_engine::hiragana_to_katakana(&self.settled_kana()),
++        };
++        self.commit_text(text)
++    }
++
+     /// Set surrounding context from the full text plus a cursor offset in
+     /// Unicode scalar values (the unit both fcitx5 and the JSON-RPC
+     /// protocol deliver). Splits at the cursor and delegates to
+diff --git a/karukan-im/core/src/core/engine/mode.rs b/karukan-im/core/src/core/engine/mode.rs
+index c2e59a6..b9112c5 100644
+--- a/karukan-im/core/src/core/engine/mode.rs
++++ b/karukan-im/core/src/core/engine/mode.rs
+@@ -32,6 +32,25 @@ impl InputMethodEngine {
+             .with_action(EngineAction::UpdateAuxText(aux))
+     }
+ 
++    /// Toggle hiragana/katakana display in Composing state without committing (Muhenkan key).
++    pub(super) fn toggle_katakana_composing(&mut self) -> EngineResult {
++        // Settle the pending romaji before the toggle so an in-flight
++        // sequence can't continue across it: `as` + Muhenkan freezes the
++        // `s` as a literal, and the next `a` starts fresh (`アsア`).
++        self.input_buf.settle_romaji(&self.converters.romaji);
++        self.mode.set(match self.mode.current() {
++            InputMode::Katakana => InputMode::Hiragana,
++            _ => InputMode::Katakana,
++        });
++        self.live.text.clear();
++        let preedit = self.set_composing_state();
++        let aux = self.format_aux_composing();
++        EngineResult::consumed()
++            .with_action(EngineAction::UpdatePreedit(preedit))
++            .with_action(EngineAction::UpdateAuxText(aux))
++            .with_action(EngineAction::HideCandidates)
++    }
++
+     /// Toggle live conversion mode via Ctrl+Shift+L.
+     ///
+     /// When toggled ON during Composing, immediately convert the current
+diff --git a/karukan-im/core/src/core/engine/tests/basic.rs b/karukan-im/core/src/core/engine/tests/basic.rs
+index 1f1e92f..6da541e 100644
+--- a/karukan-im/core/src/core/engine/tests/basic.rs
++++ b/karukan-im/core/src/core/engine/tests/basic.rs
+@@ -241,9 +241,9 @@ fn ctrl_space_inserts_fullwidth_space_while_composing_when_enabled() {
+     assert!(result.consumed);
+     assert!(matches!(engine.state(), InputState::Composing { .. }));
+     assert!(
+-        engine.input_buf.text.contains('\u{3000}'),
++        engine.input_buf.display().contains('\u{3000}'),
+         "buffer should contain a full-width space, got {:?}",
+-        engine.input_buf.text
++        engine.input_buf.display()
+     );
+ }
+ 
+@@ -261,5 +261,5 @@ fn ctrl_space_passes_through_while_composing_when_disabled() {
+     // NOT insert a full-width space.
+     assert!(matches!(engine.state(), InputState::Composing { .. }));
+     assert_eq!(engine.preedit().unwrap().text(), "あ");
+-    assert!(!engine.input_buf.text.contains('\u{3000}'));
++    assert!(!engine.input_buf.display().contains('\u{3000}'));
+ }
+diff --git a/karukan-im/core/src/core/engine/tests/fkey.rs b/karukan-im/core/src/core/engine/tests/fkey.rs
+new file mode 100644
+index 0000000..ec259b3
+--- /dev/null
++++ b/karukan-im/core/src/core/engine/tests/fkey.rs
+@@ -0,0 +1,372 @@
++use super::*;
++
++// "n" alone does not produce "ん" — "nn" or "n'" is required by the romaji converter.
++
++#[test]
++fn test_f6_commits_hiragana_in_composing() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++    assert_eq!(engine.preedit().unwrap().text(), "あいうえお");
++
++    let result = engine.process_key(&press_key(Keysym::F6));
++    assert!(result.consumed);
++    assert_eq!(commit_text(&result), Some("あいうえお".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f7_commits_full_katakana_in_composing() {
++    let mut engine = InputMethodEngine::new();
++    // "nihonn" → "にほん" ("nn" で "ん" を確定)
++    type_str(&mut engine, "nihonn");
++    assert_eq!(engine.preedit().unwrap().text(), "にほん");
++
++    let result = engine.process_key(&press_key(Keysym::F7));
++    assert!(result.consumed);
++    assert_eq!(commit_text(&result), Some("ニホン".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f8_commits_half_katakana_in_composing() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++
++    let result = engine.process_key(&press_key(Keysym::F8));
++    assert!(result.consumed);
++    assert_eq!(commit_text(&result), Some("ｱｲｳｴｵ".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f9_commits_fullwidth_romaji_in_hiragana_mode() {
++    let mut engine = InputMethodEngine::new();
++    // "aiueo" は各1文字ずつ確定するため raw_input = "aiueo"
++    type_str(&mut engine, "aiueo");
++
++    let result = engine.process_key(&press_key(Keysym::F9));
++    assert!(result.consumed);
++    // 打ったローマ字をそのまま全角化: aiueo → ａｉｕｅｏ
++    assert_eq!(commit_text(&result), Some("ａｉｕｅｏ".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f10_commits_halfwidth_romaji_in_hiragana_mode() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert!(result.consumed);
++    // 打ったローマ字をそのまま: aiueo
++    assert_eq!(commit_text(&result), Some("aiueo".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f10_windows_stays_windows() {
++    // ユーザーが "windows" と打った場合、かな変換されても F10 で "windows" に戻れること
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "windows");
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert!(result.consumed);
++    // 逆変換せず打ったローマ字をそのまま返す
++    let text = commit_text(&result).unwrap_or_default();
++    assert_eq!(text, "windows");
++}
++
++#[test]
++fn test_f9_windows_fullwidth() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "windows");
++
++    let result = engine.process_key(&press_key(Keysym::F9));
++    assert!(result.consumed);
++    let text = commit_text(&result).unwrap_or_default();
++    assert_eq!(text, "ｗｉｎｄｏｗｓ");
++}
++
++#[test]
++fn test_f10_includes_pending_romaji_buffer() {
++    let mut engine = InputMethodEngine::new();
++    // "nihon" → raw_input="niho", romaji_buffer="n"
++    type_str(&mut engine, "nihon");
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert!(result.consumed);
++    // raw_input "niho" + pending "n" = "nihon"
++    assert_eq!(commit_text(&result), Some("nihon".to_string()));
++}
++
++#[test]
++fn test_f9_includes_pending_romaji_buffer() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "nihon");
++
++    let result = engine.process_key(&press_key(Keysym::F9));
++    assert!(result.consumed);
++    // raw_input "niho" + pending "n" = "nihon" → 全角: "ｎｉｈｏｎ"
++    assert_eq!(commit_text(&result), Some("ｎｉｈｏｎ".to_string()));
++}
++
++#[test]
++fn test_f9_commits_fullwidth_alpha_in_alphabet_mode() {
++    let mut engine = InputMethodEngine::new();
++    // Shift+A でアルファベットモードに入り、そのまま b, c と入力
++    engine.process_key(&press_shift('A'));
++    engine.process_key(&press('b'));
++    engine.process_key(&press('c'));
++    assert_eq!(engine.mode.current(), InputMode::Alphabet);
++    // input_buf = "Abc"
++
++    let result = engine.process_key(&press_key(Keysym::F9));
++    assert!(result.consumed);
++    // 全角変換: 大小を保ったまま全角に
++    assert_eq!(commit_text(&result), Some("Ａｂｃ".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f10_commits_halfwidth_alpha_in_alphabet_mode() {
++    let mut engine = InputMethodEngine::new();
++    engine.process_key(&press_shift('A'));
++    engine.process_key(&press('b'));
++    engine.process_key(&press('c'));
++    assert_eq!(engine.mode.current(), InputMode::Alphabet);
++    // input_buf = "Abc" (半角ASCII なので変化なし)
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert!(result.consumed);
++    assert_eq!(commit_text(&result), Some("Abc".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++// 無変換: Composing ステートでひらがな↔カタカナをトグル（コミットしない）
++
++#[test]
++fn test_muhenkan_toggles_to_katakana_in_composing() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++    assert_eq!(engine.preedit().unwrap().text(), "あいうえお");
++
++    let result = engine.process_key(&press_key(Keysym::MUHENKAN));
++    assert!(result.consumed);
++    // コミットは発生しない
++    assert!(commit_text(&result).is_none());
++    // preedit がカタカナに変わる
++    assert_eq!(engine.preedit().unwrap().text(), "アイウエオ");
++    assert_eq!(engine.mode.current(), InputMode::Katakana);
++    // Composing のまま
++    assert!(matches!(engine.state(), InputState::Composing { .. }));
++}
++
++#[test]
++fn test_muhenkan_toggles_back_to_hiragana_in_composing() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++
++    engine.process_key(&press_key(Keysym::MUHENKAN)); // → カタカナ
++    engine.process_key(&press_key(Keysym::MUHENKAN)); // → ひらがなに戻る
++
++    assert_eq!(engine.mode.current(), InputMode::Hiragana);
++    assert_eq!(engine.preedit().unwrap().text(), "あいうえお");
++}
++
++#[test]
++fn test_muhenkan_then_enter_commits_katakana() {
++    let mut engine = InputMethodEngine::new();
++    // "nihonn" で "にほん" を確定
++    type_str(&mut engine, "nihonn");
++    assert_eq!(engine.preedit().unwrap().text(), "にほん");
++
++    engine.process_key(&press_key(Keysym::MUHENKAN)); // カタカナモードに
++    assert_eq!(engine.preedit().unwrap().text(), "ニホン");
++
++    let result = engine.process_key(&press_key(Keysym::RETURN));
++    assert_eq!(commit_text(&result), Some("ニホン".to_string()));
++}
++
++// Conversion ステート（Space 後）の F キー
++
++#[test]
++fn test_f9_commits_fullwidth_romaji_after_space() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++    engine.process_key(&press_key(Keysym::SPACE));
++    assert!(matches!(engine.state(), InputState::Conversion { .. }));
++
++    let result = engine.process_key(&press_key(Keysym::F9));
++    assert!(result.consumed);
++    // raw_input "aiueo" → 全角
++    assert_eq!(commit_text(&result), Some("ａｉｕｅｏ".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f10_commits_halfwidth_romaji_after_space() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++    engine.process_key(&press_key(Keysym::SPACE));
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert!(result.consumed);
++    // raw_input "aiueo" → 半角そのまま
++    assert_eq!(commit_text(&result), Some("aiueo".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f7_commits_katakana_after_space() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "nihonn");
++    engine.process_key(&press_key(Keysym::SPACE)); // 変換モードへ
++    assert!(matches!(engine.state(), InputState::Conversion { .. }));
++
++    let result = engine.process_key(&press_key(Keysym::F7));
++    assert!(result.consumed);
++    assert_eq!(commit_text(&result), Some("ニホン".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_f6_commits_hiragana_after_space() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++    engine.process_key(&press_key(Keysym::SPACE));
++    assert!(matches!(engine.state(), InputState::Conversion { .. }));
++
++    let result = engine.process_key(&press_key(Keysym::F6));
++    assert!(result.consumed);
++    assert_eq!(commit_text(&result), Some("あいうえお".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++#[test]
++fn test_muhenkan_commits_katakana_after_space() {
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo");
++    engine.process_key(&press_key(Keysym::SPACE));
++    assert!(matches!(engine.state(), InputState::Conversion { .. }));
++
++    let result = engine.process_key(&press_key(Keysym::MUHENKAN));
++    assert!(result.consumed);
++    assert_eq!(commit_text(&result), Some("アイウエオ".to_string()));
++    assert!(matches!(engine.state(), InputState::Empty));
++}
++
++// --- Regression tests (bugs found in code review) ---
++
++#[test]
++fn test_f10_after_cursor_move_with_pending_romaji() {
++    // Bug 1: flush_romaji_to_composed via cursor movement didn't push a raw entry,
++    // so F10 after LEFT dropped the flushed char from the output.
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "nihon"); // input_buf="にほ", romaji_buf="n"
++
++    engine.process_key(&press_key(Keysym::LEFT)); // flushes "n"→"ん", cursor moves left
++    // Now input_buf="にほん", raw_inputs=["ni","ho","n"]
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert_eq!(commit_text(&result), Some("nihon".to_string()));
++}
++
++#[test]
++fn test_backspace_after_ctrl_space_does_not_corrupt_raw_inputs() {
++    // Bug 2: Ctrl+Space (full-width space) wasn't tracked in raw_inputs, so
++    // backspacing it would pop the preceding kana's entry and corrupt raw_inputs.
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "ai"); // raw_inputs=["a","i"]
++    engine.process_key(&press_ctrl(Keysym::SPACE)); // inserts "　", raw_inputs=["a","i"," "]
++    engine.process_key(&press_key(Keysym::BACKSPACE)); // removes space, raw_inputs=["a","i"]
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert_eq!(commit_text(&result), Some("ai".to_string()));
++}
++
++#[test]
++fn test_f10_mid_buffer_insert_preserves_order() {
++    // Bug 3: raw_inputs was an end-stack; inserting mid-buffer after cursor movement
++    // appended the new entry at the wrong position, so F10 emitted romaji out of order.
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "aiueo"); // raw_inputs=["a","i","u","e","o"], cursor=5
++
++    engine.process_key(&press_key(Keysym::LEFT));
++    engine.process_key(&press_key(Keysym::LEFT)); // cursor=3
++
++    engine.process_key(&press('k'));
++    engine.process_key(&press('a')); // inserts "か" at pos 3 → raw_inputs=["a","i","u","ka","e","o"]
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert_eq!(commit_text(&result), Some("aiukaeo".to_string()));
++}
++
++#[test]
++fn test_muhenkan_flushes_pending_romaji_before_toggle() {
++    // Bug 4: toggle_katakana_composing didn't flush the romaji buffer first.
++    // "as" leaves "s" pending; without the flush, typing "a" after MUHENKAN
++    // continues the old sequence "sa"→"さ"→"サ". With the flush "s" is frozen
++    // as a literal and the subsequent "a" starts a fresh sequence → "ア".
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "as"); // input_buf="あ", romaji_buf="s"
++
++    engine.process_key(&press_key(Keysym::MUHENKAN)); // flush "s" as literal, toggle
++    engine.process_key(&press('a')); // fresh "a"→"あ"→katakana"ア"
++
++    assert_eq!(engine.preedit().unwrap().text(), "アsア");
++}
++
++#[test]
++fn test_ctrl_space_from_empty_then_type_does_not_panic() {
++    // Bug (review finding 1): Ctrl+Space from Empty state inserted U+3000 into
++    // input_buf without pushing to raw_inputs, so the next keystroke panicked
++    // with "insertion index out of bounds".
++    let mut engine = InputMethodEngine::new();
++    assert!(matches!(engine.state(), InputState::Empty));
++    engine.process_key(&press_ctrl(Keysym::SPACE));
++    assert!(matches!(engine.state(), InputState::Composing { .. }));
++    // Must not panic; just verify it proceeds normally
++    engine.process_key(&press('a'));
++    assert!(matches!(engine.state(), InputState::Composing { .. }));
++}
++
++#[test]
++fn test_f10_after_digraph_partial_backspace() {
++    // Backspace removes one display character, so "きゃ" truncates to "き"
++    // rather than vanishing as a group. A rule's keystrokes are recorded on
++    // its first output character, so the surviving "き" still carries the
++    // whole "kya" — there is no way to split one rule's keystrokes across
++    // its two output characters.
++    let mut engine = InputMethodEngine::new();
++    type_str(&mut engine, "kya"); // "きゃ" (two chars from one sequence)
++    assert_eq!(engine.preedit().unwrap().text(), "きゃ");
++
++    engine.process_key(&press_key(Keysym::BACKSPACE));
++    assert_eq!(engine.preedit().unwrap().text(), "き");
++
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert_eq!(commit_text(&result), Some("kya".to_string()));
++
++    // The commit resets the record: the next composition starts clean.
++    type_str(&mut engine, "a");
++    let result = engine.process_key(&press_key(Keysym::F10));
++    assert_eq!(commit_text(&result), Some("a".to_string()));
++}
++
++// --- ヘルパー ---
++
++fn type_str(engine: &mut InputMethodEngine, s: &str) {
++    for ch in s.chars() {
++        engine.process_key(&press(ch));
++    }
++}
++
++fn commit_text(result: &EngineResult) -> Option<String> {
++    result.actions.iter().find_map(|a| {
++        if let EngineAction::Commit(text) = a {
++            Some(text.clone())
++        } else {
++            None
++        }
++    })
++}
+diff --git a/karukan-im/core/src/core/engine/tests/mod.rs b/karukan-im/core/src/core/engine/tests/mod.rs
+index 8556496..e29f00d 100644
+--- a/karukan-im/core/src/core/engine/tests/mod.rs
++++ b/karukan-im/core/src/core/engine/tests/mod.rs
+@@ -12,6 +12,7 @@ mod chunks;
+ mod conversion;
+ mod cursor;
+ mod emoji;
++mod fkey;
+ mod katakana;
+ mod learning;
+ mod live_conversion;
+diff --git a/karukan-im/core/src/core/keycode.rs b/karukan-im/core/src/core/keycode.rs
+index b83a0db..7f6b575 100644
+--- a/karukan-im/core/src/core/keycode.rs
++++ b/karukan-im/core/src/core/keycode.rs
+@@ -89,6 +89,23 @@ impl Keysym {
+     pub const KEY_V: Keysym = Keysym(0x0076); // lowercase 'v'
+     pub const KEY_V_UPPER: Keysym = Keysym(0x0056); // uppercase 'V'
+ 
++    // Function keys
++    pub const F1: Keysym = Keysym(0xffbe);
++    pub const F2: Keysym = Keysym(0xffbf);
++    pub const F3: Keysym = Keysym(0xffc0);
++    pub const F4: Keysym = Keysym(0xffc1);
++    pub const F5: Keysym = Keysym(0xffc2);
++    pub const F6: Keysym = Keysym(0xffc3);
++    pub const F7: Keysym = Keysym(0xffc4);
++    pub const F8: Keysym = Keysym(0xffc5);
++    pub const F9: Keysym = Keysym(0xffc6);
++    pub const F10: Keysym = Keysym(0xffc7);
++    pub const F11: Keysym = Keysym(0xffc8);
++    pub const F12: Keysym = Keysym(0xffc9);
++
++    // Japanese keyboard keys
++    pub const MUHENKAN: Keysym = Keysym(0xff22); // 無変換
++
+     /// Check if this keysym represents a printable character
+     pub fn is_printable(&self) -> bool {
+         // ASCII printable range (0x20-0x7e)
+-- 
+2.55.0
+

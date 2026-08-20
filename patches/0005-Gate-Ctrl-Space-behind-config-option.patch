@@ -1,0 +1,82 @@
+From d7e356f9a886dd4845c44b3c2bae1658e71493fd Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Wed, 1 Jul 2026 15:25:37 +0900
+Subject: [PATCH 05/17] Gate Ctrl+Space behind config option
+
+When ctrl_space_fullwidth is false, Ctrl+Space key presses are
+not consumed and pass through to the OS, allowing window-switching
+shortcuts and other keybindings to function normally.
+
+Add tests to verify behavior in both enabled and disabled states:
+- ctrl_space_inputs_fullwidth_space_in_empty_when_enabled
+- ctrl_space_passes_through_in_empty_when_disabled
+---
+ karukan-im/core/src/core/engine/input.rs      | 16 +++++++++++
+ .../core/src/core/engine/tests/basic.rs       | 27 +++++++++++++++++++
+ 2 files changed, 43 insertions(+)
+
+diff --git a/karukan-im/core/src/core/engine/input.rs b/karukan-im/core/src/core/engine/input.rs
+index 1a1ebac..9207faf 100644
+--- a/karukan-im/core/src/core/engine/input.rs
++++ b/karukan-im/core/src/core/engine/input.rs
+@@ -111,6 +111,22 @@ impl InputMethodEngine {
+ 
+     /// Process key in empty state
+     pub(super) fn process_key_empty(&mut self, key: &KeyEvent, shift_active: bool) -> EngineResult {
++        // Ctrl+Space: start input with full-width space.
++        // Gated on config: when `ctrl_space_fullwidth` is false, do not
++        // intercept — return not_consumed so the key passes through to the
++        // OS (e.g. window-switching shortcuts).
++        if key.modifiers.control_key && key.keysym == Keysym::SPACE {
++            if !self.config.ctrl_space_fullwidth {
++                return EngineResult::not_consumed();
++            }
++            self.clear_composition();
++            self.input_buf.push_direct('\u{3000}');
++            let preedit = self.set_composing_state();
++            return EngineResult::consumed()
++                .with_action(EngineAction::UpdatePreedit(preedit))
++                .with_action(EngineAction::UpdateAuxText(self.format_aux_composing()));
++        }
++
+         // Shift+Space on its own is the "I want a full-width space" gesture,
+         // whatever the setting says. Committed directly, so no composition
+         // opens for a second Space to convert.
+diff --git a/karukan-im/core/src/core/engine/tests/basic.rs b/karukan-im/core/src/core/engine/tests/basic.rs
+index cb1a62e..d1f2f51 100644
+--- a/karukan-im/core/src/core/engine/tests/basic.rs
++++ b/karukan-im/core/src/core/engine/tests/basic.rs
+@@ -205,3 +205,30 @@ fn ctrl_space_fullwidth_maps_from_settings() {
+     settings.keys.ctrl_space_fullwidth = false;
+     assert!(!EngineConfig::from_settings(&settings).ctrl_space_fullwidth);
+ }
++
++#[test]
++fn ctrl_space_inputs_fullwidth_space_in_empty_when_enabled() {
++    // Default config has ctrl_space_fullwidth = true.
++    let mut engine = InputMethodEngine::new();
++    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
++    assert!(result.consumed);
++    assert!(matches!(engine.state(), InputState::Composing { .. }));
++    assert_eq!(engine.preedit().unwrap().text(), "\u{3000}");
++}
++
++#[test]
++fn ctrl_space_passes_through_in_empty_when_disabled() {
++    let config = EngineConfig {
++        ctrl_space_fullwidth: false,
++        ..EngineConfig::default()
++    };
++    let mut engine = InputMethodEngine::with_config(config);
++    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
++    assert!(!result.consumed);
++    assert!(matches!(engine.state(), InputState::Empty));
++    assert!(
++        result.actions.is_empty(),
++        "expected no actions, got {:?}",
++        result.actions
++    );
++}
+-- 
+2.55.0
+

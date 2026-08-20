@@ -1,0 +1,32 @@
+From ab4e49d279089b7b42ed07547be8ef9a1189cc6d Mon Sep 17 00:00:00 2001
+From: Yuya Fujiwara <hzw1258@gmail.com>
+Date: Wed, 1 Jul 2026 15:39:51 +0900
+Subject: [PATCH 07/17] Document Conversion state exception for Ctrl+Space
+
+Clarify that the ctrl_space_fullwidth configuration
+only applies to Empty and Composing states. In
+Conversion state, Ctrl+Space always navigates to the
+next candidate regardless of the configuration,
+maintaining consistency with existing Space behavior
+and recognizing that window switching while viewing
+candidates is rare.
+---
+ .../specs/2026-07-01-configurable-ctrl-space-design.md          | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/docs/superpowers/specs/2026-07-01-configurable-ctrl-space-design.md b/docs/superpowers/specs/2026-07-01-configurable-ctrl-space-design.md
+index 9de054c..ff973c7 100644
+--- a/docs/superpowers/specs/2026-07-01-configurable-ctrl-space-design.md
++++ b/docs/superpowers/specs/2026-07-01-configurable-ctrl-space-design.md
+@@ -76,6 +76,8 @@ ctrl_space_fullwidth = true
+ 
+ Composing (変換中) に Ctrl+Space を押すと、未確定の preedit (下線テキスト) が残ったまま OS のショートカット (ウインドウ切替等) が発火する。「未入力時・入力中の両方で OS へ渡す」という決定に基づく想定内の挙動として受容する。
+ 
++また、本機能のスコープは Empty / Composing の 2 状態に限る。候補ウィンドウを開いている Conversion 状態では、Ctrl+Space は `ctrl_space_fullwidth` の値によらず従来通り「次の候補へ」として消費され、OS へは渡らない (`process_key_conversion` は Space を候補送りに割り当てているため)。候補ウィンドウ表示中にウインドウ切替を行う場面は稀であり、既存の bare-Space の候補送り挙動と揃える意図で、この状態は今回の設定対象外とする。
++
+ ## テスト
+ 
+ `karukan-im` のエンジンテストに以下 4 ケースを追加する。
+-- 
+2.55.0
+
